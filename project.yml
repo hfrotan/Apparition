@@ -51,3 +51,24 @@ targets:
         LIBRARY_SEARCH_PATHS: $(SRCROOT)/build/core-out/lib
         OTHER_LDFLAGS: -lapparition_core
         SWIFT_STRICT_CONCURRENCY: minimal
+  ApparitionLab:
+    type: application
+    platform: iOS
+    sources:
+      - path: Lab
+        excludes:
+          - Info.plist
+    info:
+      path: Lab/Info.plist
+      properties:
+        CFBundleDisplayName: Apparition Lab
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition.lab
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_OBJC_BRIDGING_HEADER: Lab/ApparitionLab-Bridging-Header.h
+        SWIFT_STRICT_CONCURRENCY: minimal

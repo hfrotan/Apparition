@@ -552,6 +552,22 @@ pub unsafe extern "C" fn apparition_launch_jit(
                             log(&mut events, format!("brk #0xf00d prepare: {} MiB at {address:#x} ({pages} pages) in {:.3}s",
                                                      length >> 20, t.elapsed().as_secs_f64()));
                         }
+                        // Experimental, Apparition only: copy x2 bytes from x1 to x0, which may be the
+                        // app's own signed __TEXT (debugserver writes through VM_PROT_COPY).
+                        // x0 = 0 on success. Used to test whether patched text runs after detach.
+                        2 => {
+                            let (destination, source, length) =
+                                (gdb.register(0, thread).await?, gdb.register(1, thread).await?, gdb.register(2, thread).await?);
+                            let result = if length == 0 || length > 4096 {
+                                format!("refused length {length}")
+                            } else {
+                                let bytes = gdb.request(&format!("m{source:x},{length:x}")).await?;
+                                gdb.request(&format!("M{destination:x},{length:x}:{bytes}")).await?
+                            };
+                            gdb.set_register(0, thread, if result == "OK" { 0 } else { 1 }).await?;
+                            gdb.set_register(PC, thread, pc + 4).await?;
+                            log(&mut events, format!("brk #0xf00d write: {length} bytes to {destination:#x}: {result}"));
+                        }
                         0 => {
                             gdb.set_register(PC, thread, pc + 4).await?;
                             let reply = gdb.request("D").await?;
