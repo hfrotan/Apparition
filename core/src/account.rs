@@ -9,7 +9,7 @@
 
 use std::ffi::c_char;
 
-use isideload::dev::{app_ids::AppIdsApi, certificates::CertificatesApi};
+use isideload::dev::{app_ids::AppIdsApi, certificates::CertificatesApi, device_type::DeveloperDeviceType};
 use rootcause::prelude::*;
 use serde_json::{Value, json};
 
@@ -22,8 +22,14 @@ fn date(value: &Option<plist::Date>) -> Value {
     value.as_ref().map(|date| Value::String(date.to_xml_format())).unwrap_or(Value::Null)
 }
 
-/// The team's iOS development certificates (the kind signing uses):
-/// `{ok, certificates: [{name, serialNumber, machineName, status, expires, madeByApparition}]}`.
+/// Every development certificate on the team, whatever its platform, since all of them count
+/// against the free account's two slots (a Mac certificate Xcode made fills one as well):
+/// `{ok, certificates: [{name, serialNumber, machineName, status, expires, platform, typeName,
+/// madeByApparition}]}`.
+///
+/// Apple's `ios/` listing (what isideload's `list_ios_certs` reads, then filters to iOS) and
+/// the platform-less one Xcode uses for Mac certificates are both read and merged by serial
+/// number; the second is best effort, since a free account may not be allowed it.
 #[unsafe(no_mangle)]
 pub extern "C" fn apparition_list_certificates() -> *mut c_char {
     reply((|| {
@@ -31,16 +37,32 @@ pub extern "C" fn apparition_list_certificates() -> *mut c_char {
         let session = guard.as_mut().ok_or_else(|| report!("Not signed in"))?;
         let team = session.team.clone();
         runtime().block_on(async {
-            let certs = session.sideloader.get_dev_session().list_ios_certs(&team).await?;
+            let dev = session.sideloader.get_dev_session();
+            let mut certs = dev.list_all_development_certs(&team, DeveloperDeviceType::Ios).await?;
+            match dev.list_all_development_certs(&team, DeveloperDeviceType::Any).await {
+                Ok(more) => {
+                    for cert in more {
+                        let known = cert.serial_number.is_some()
+                            && certs.iter().any(|c| c.serial_number == cert.serial_number);
+                        if !known {
+                            certs.push(cert);
+                        }
+                    }
+                }
+                Err(error) => tracing::warn!("platform-less certificate listing failed: {error}"),
+            }
             let list: Vec<Value> = certs
                 .iter()
                 .map(|cert| {
+                    let kind = cert.certificate_type.as_ref();
                     json!({
                         "name": cert.name,
                         "serialNumber": cert.serial_number,
                         "machineName": cert.machine_name,
                         "status": cert.status,
                         "expires": date(&cert.expiration_date),
+                        "platform": cert.certificate_platform.clone().or_else(|| kind.and_then(|k| k.platform.clone())),
+                        "typeName": kind.and_then(|k| k.name.clone()),
                         "madeByApparition": cert.machine_name.as_deref() == Some(MACHINE_NAME),
                     })
                 })
@@ -50,8 +72,11 @@ pub extern "C" fn apparition_list_certificates() -> *mut c_char {
     })())
 }
 
-/// Revokes the development certificate with `serial_number`. Apps signed with it stop
-/// launching until they are signed again. Returns `{ok}`.
+/// Revokes the development certificate with `serial_number`, of any platform. Apps signed
+/// with it stop launching until they are signed again. Returns `{ok}`.
+///
+/// Tried through the `ios/` endpoint first, then the platform-less one, which is where a Mac
+/// certificate lives; when both refuse, the first error is the one reported.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_revoke_certificate(serial_number: *const c_char) -> *mut c_char {
     reply((|| {
@@ -60,7 +85,13 @@ pub unsafe extern "C" fn apparition_revoke_certificate(serial_number: *const c_c
         let session = guard.as_mut().ok_or_else(|| report!("Not signed in"))?;
         let team = session.team.clone();
         runtime().block_on(async {
-            session.sideloader.get_dev_session().revoke_development_cert(&team, &serial, None).await?;
+            let dev = session.sideloader.get_dev_session();
+            if let Err(first) = dev.revoke_development_cert(&team, &serial, DeveloperDeviceType::Ios).await {
+                if let Err(second) = dev.revoke_development_cert(&team, &serial, DeveloperDeviceType::Any).await {
+                    tracing::warn!("platform-less revoke failed too: {second}");
+                    return Err(first);
+                }
+            }
             Ok(json!({}))
         })
     })())

@@ -4,7 +4,9 @@ import SwiftUI
 /// or `github:owner/repo` (the newest release with a matching .ipa asset).
 struct BrowseView: View {
     let model: ProbeModel
+    let account: AccountModel
     let library: LibraryModel
+    let onSetup: () -> Void
 
     @State private var addingSource = false
     @State private var refreshing = false
@@ -68,7 +70,12 @@ struct BrowseView: View {
                     }
                 }
             } else if let status = library.status, status.contains("error") {
-                Section { Note(text: status, kind: .error) }
+                Section {
+                    Note(text: status, kind: .error)
+                    if DeveloperSlots.isSlotError(status) {
+                        ManageSlotsButton(account: account, library: library, onSignIn: onSetup)
+                    }
+                }
             }
             ForEach(library.sources) { source in
                 Section {

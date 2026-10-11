@@ -35,8 +35,17 @@ struct RootView: View {
 
     @AppStorage(RootView.showDiagnosticsKey) private var showDiagnostics = false
     @AppStorage(RootView.setupFinishedKey) private var setupFinished = false
-    /// First run opens on Setup; after that, the Library.
-    @State private var tab: AppTab = UserDefaults.standard.bool(forKey: RootView.setupFinishedKey) ? .library : .setup
+    /// Opens on the Library once setup is complete, on Setup on first run or while anything
+    /// is missing (whether or not Setup was dismissed with Finish Later).
+    @State private var tab: AppTab
+
+    init(model: ProbeModel, account: AccountModel, library: LibraryModel, companions: CompanionFinder) {
+        self.model = model
+        self.account = account
+        self.library = library
+        self.companions = companions
+        _tab = State(initialValue: SetupStatus.opensOnLibrary(model: model, account: account) ? .library : .setup)
+    }
 
     private var visibleTabs: [AppTab] {
         AppTab.allCases.filter { $0 != .diagnostics || showDiagnostics }
@@ -49,14 +58,14 @@ struct RootView: View {
                 LibraryView(model: model, account: account, library: library,
                             onBrowse: { tab = .browse }, onSetup: { tab = .setup })
             case .browse:
-                BrowseView(model: model, library: library)
+                BrowseView(model: model, account: account, library: library, onSetup: { tab = .setup })
             case .setup:
                 SetupView(model: model, account: account, companions: companions) {
                     setupFinished = true
                     tab = .library
                 }
             case .settings:
-                SettingsView(model: model, account: account, companions: companions, onSetup: { tab = .setup })
+                SettingsView(model: model, account: account, library: library, companions: companions, onSetup: { tab = .setup })
             case .diagnostics:
                 DiagnosticsView(model: model, account: account, library: library, companions: companions)
             }

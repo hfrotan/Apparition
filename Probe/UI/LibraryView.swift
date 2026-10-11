@@ -167,6 +167,9 @@ struct LibraryView: View {
         if let error = app.lastError {
             Note(text: error, kind: .error)
                 .lineLimit(4)
+            if DeveloperSlots.isSlotError(error) {
+                ManageSlotsButton(account: account, library: library, onSignIn: onSetup)
+            }
         } else if let signed = Date.iso(app.signedAt) {
             Note(text: "Refreshed \(signed.relativeToNow)", kind: .success)
         }

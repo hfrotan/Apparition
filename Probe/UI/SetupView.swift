@@ -22,6 +22,16 @@ struct SetupStatus {
 
     var doneCount: Int { [companion, paired, anisette, account].filter { $0 }.count }
     var complete: Bool { doneCount == 4 }
+
+    /// Whether the window opens on the Library rather than Setup. At launch nobody is signed in
+    /// yet (the session lives in memory), so an Apple ID signed in with before counts as done:
+    /// the next install or refresh signs in again, or asks.
+    @MainActor
+    static func opensOnLibrary(model: ProbeModel, account: AccountModel) -> Bool {
+        let status = SetupStatus(model: model, account: account,
+                                 pairedUDID: UserDefaults.standard.string(forKey: "pairedUDID"))
+        return status.companion && status.paired && status.anisette && (status.account || account.lastAppleID != nil)
+    }
 }
 
 /// First-run setup, also reachable later from its tab: companion, pairing, anisette, Apple ID.

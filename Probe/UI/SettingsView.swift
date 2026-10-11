@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsView: View {
     let model: ProbeModel
     let account: AccountModel
+    let library: LibraryModel
     let companions: CompanionFinder
     let onSetup: () -> Void
 
@@ -117,6 +118,11 @@ struct SettingsView: View {
                 if account.lastAppleID != nil && Keychain.hasPassword {
                     Button("Forget Apple ID", role: .destructive) { account.signOut() }
                 }
+            }
+            NavigationLink {
+                DeveloperSlotsView(account: account, library: library, onSignIn: onSetup)
+            } label: {
+                Label("Certificates & App IDs", systemImage: "person.badge.key")
             }
             Toggle(isOn: Binding(get: { account.rememberPassword }, set: { account.rememberPassword = $0 })) {
                 Text("Remember password")

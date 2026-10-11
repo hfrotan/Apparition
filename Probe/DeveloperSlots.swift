@@ -15,6 +15,10 @@ enum DeveloperSlots {
         let machineName: String?
         let status: String?
         let expires: String?
+        /// "ios", "mac", ... (Apple's certificatePlatform, or the certificate type's platform).
+        let platform: String?
+        /// Apple's name for the certificate type, e.g. "Apple Development".
+        let typeName: String?
         /// Made under Apparition's machine name, so it's the one this app signs with (if its
         /// key is on this device) or one an earlier install of Apparition left behind.
         let madeByApparition: Bool
@@ -36,6 +40,15 @@ enum DeveloperSlots {
 
     struct Failure: Error, CustomStringConvertible {
         let description: String
+    }
+
+    /// Whether a sign or install error is Apple saying a slot is used up: error 7460 (maximum
+    /// number of certificates) or the App ID limit. The UI offers this screen next to it.
+    static func isSlotError(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        if lower.contains("7460") || lower.contains("maximum number of certificates") { return true }
+        guard lower.contains("app id") else { return false }
+        return ["limit", "maximum", "more than", "9401"].contains { lower.contains($0) }
     }
 
     static func certificates() async throws -> [Certificate] {
@@ -75,7 +88,7 @@ enum DeveloperSlots {
 enum DeveloperSlotsEndpoints {
     static func register() {
         DebugSurface.shared.register([
-            .query("certificates", "The account's iOS development certificates (a free account has two slots)",
+            .query("certificates", "The account's development certificates of every platform (a free account has two slots)",
                    timeout: .seconds(60)) { _ in
                 try await DeveloperSlots.certificates()
             },
