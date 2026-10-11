@@ -46,8 +46,6 @@ final class AccountModel {
         let lastError: String?
     }
 
-    nonisolated static let defaultAnisette = "http://172.20.48.198:6969"
-
     /// Keep the password in this device's Keychain so refreshes can sign in without anyone
     /// present. Off by default; turning it off deletes the stored password.
     var rememberPassword: Bool = UserDefaults.standard.bool(forKey: "rememberPassword") {
@@ -57,7 +55,9 @@ final class AccountModel {
         }
     }
 
-    var anisetteURL: String = UserDefaults.standard.string(forKey: "anisetteURL") ?? AccountModel.defaultAnisette {
+    /// An anisette-v3 server URL. Apparition ships none: the user enters one, or self-hosts
+    /// selfhost/anisette/compose.yaml.
+    var anisetteURL: String = UserDefaults.standard.string(forKey: "anisetteURL") ?? "" {
         didSet { UserDefaults.standard.set(anisetteURL, forKey: "anisetteURL") }
     }
     private(set) var busy = false
@@ -94,6 +94,10 @@ final class AccountModel {
 
     func signIn(email: String, password: String) async {
         guard !busy else { return }
+        guard !anisetteURL.isEmpty else {
+            lastError = "Enter an anisette server URL first (or self-host one: selfhost/anisette in the Apparition repo)."
+            return
+        }
         busy = true
         lastError = nil
         defer { busy = false; twoFactor = nil }
@@ -131,7 +135,7 @@ final class AccountModel {
     /// can't be answered here, so it aborts; Apple skips 2FA for a device it already trusts.
     func signInSilently() async -> Bool {
         if team != nil { return true }
-        guard !busy, rememberPassword, let email = UserDefaults.standard.string(forKey: "appleID"),
+        guard !busy, rememberPassword, !anisetteURL.isEmpty, let email = UserDefaults.standard.string(forKey: "appleID"),
               let password = Keychain.load(account: email) else { return false }
         busy = true
         defer { busy = false }

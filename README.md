@@ -30,6 +30,14 @@ app's own signed `__TEXT` keep running after it detaches, including code first r
 only after the detach and a site rewritten to branch to a trampoline. Apparition serves
 this through an experimental JIT26 command, `x16 = 2` (copy x2 bytes from x1 to x0).
 
+## Anisette
+
+Signing in to Apple needs an anisette-v3 server. Apparition ships none: enter the URL of
+any v3 server, or self-host one with `docker compose -f selfhost/anisette/compose.yaml
+up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
+digest), and enter `http://<host>:6969`. The server sees this device's anisette identity
+and IP address, never the Apple ID or password, which go straight to Apple.
+
 ## Build
 
     scripts/build-core.sh      # builds the Rust core (isideload + idevice) for iOS

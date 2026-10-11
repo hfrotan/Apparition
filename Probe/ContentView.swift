@@ -138,7 +138,7 @@ struct ContentView: View {
                     .textContentType(.password)
                 Toggle("Remember password on this device (for automatic refresh)",
                        isOn: Binding(get: { account.rememberPassword }, set: { account.rememberPassword = $0 }))
-                TextField("Anisette server", text: Binding(get: { account.anisetteURL }, set: { account.anisetteURL = $0 }))
+                TextField("Anisette server URL (v3), e.g. http://your-server:6969", text: Binding(get: { account.anisetteURL }, set: { account.anisetteURL = $0 }))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.caption.monospaced())

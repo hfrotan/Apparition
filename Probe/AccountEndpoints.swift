@@ -37,7 +37,7 @@ enum AccountEndpoints {
                 state(model)
             },
             .command("setAnisette", "Set the anisette-v3 server URL used for the next sign-in",
-                     parameters: [.string("url", "e.g. http://172.20.48.198:6969", required: true)]) { args in
+                     parameters: [.string("url", "An anisette-v3 server, e.g. http://<host>:6969", required: true)]) { args in
                 model.anisetteURL = try args.requireString("url")
                 return state(model)
             },
