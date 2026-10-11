@@ -36,6 +36,7 @@ final class ProbeModel {
         var peer: IDevice.PeerDevice?
         var deviceUUID: String?
         var services: [IDevice.Service]?
+        var detail: String?
     }
 
     nonisolated static let manualPairingType = "_remotepairing-manual-pairing._tcp"
@@ -214,6 +215,18 @@ final class ProbeModel {
         }
     }
 
+    func install(host: String, port: Int, appPath: String) async {
+        await run(action: "install", host: host, port: port) { file, box in
+            let reply = try IDevice.install(host: host, port: UInt16(port), hostname: Self.hostname, file: file,
+                                            pin: PinBox.callback, context: box, appPath: appPath)
+            guard reply["ok"] as? Bool == true else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "install failed")
+            }
+            let elapsed = reply["elapsedMs"] as? Int ?? 0
+            return { attempt in attempt.detail = "installed in \(elapsed) ms" }
+        }
+    }
+
     private func run(action: String, host: String, port: Int,
                      _ body: @escaping @Sendable (IDevice.PairingFile, UnsafeMutableRawPointer) throws -> (@Sendable (inout Attempt) -> Void)) async {
         guard !busy else { return }
@@ -243,6 +256,10 @@ final class ProbeModel {
         case .success(let apply):
             apply(&attempts[0])
             attempts[0].outcome = "ok"
+            if let peer = attempts[0].peer {
+                UserDefaults.standard.set(peer.udid, forKey: "pairedUDID")
+                UserDefaults.standard.set(peer.name, forKey: "pairedName")
+            }
             log.info("\(action, privacy: .public) ok")
         case .failure(let error):
             attempts[0].outcome = "error: \(error)"
@@ -280,6 +297,8 @@ final class ProbeModel {
 /// Hands the PIN from the UI (or the debug server) to idevice's blocking C callback.
 final class PinBox: @unchecked Sendable {
     var onRequest: (() -> Void)?
+    /// Set by callers whose request carries details (2FA); called before waiting.
+    var onRequestJSON: ((String) -> Void)?
     private let semaphore = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     /// Owned C string; kept until the next request because idevice reads it after the callback returns.

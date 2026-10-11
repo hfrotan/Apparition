@@ -106,6 +106,21 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel and installs the signed app at `appPath` through it (apparition_install).
+    static func install(host: String, port: UInt16, hostname: String, file: PairingFile,
+                        pin: PinCallback, context: UnsafeMutableRawPointer, appPath: String) throws -> [String: Any] {
+        try withSockaddr(host: host, port: port) { addr, length in
+            var adapter: OpaquePointer?
+            var handshake: OpaquePointer?
+            try check(tunnel_create_rppairing(addr, length, hostname, file.handle, pin, context, &adapter, &handshake))
+            defer {
+                if let handshake { rsd_handshake_free(handshake) }
+                if let adapter { adapter_free(adapter) }
+            }
+            return AccountModel.call(apparition_install(adapter, handshake, appPath))
+        }
+    }
+
     /// Pair-verify (pairing first if needed), open the CDTunnel and run the RSD handshake.
     /// Returns the device UUID and its RSD service list; the tunnel is closed afterwards.
     static func tunnelServices(host: String, port: UInt16, hostname: String, file: PairingFile,

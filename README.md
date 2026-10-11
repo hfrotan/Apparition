@@ -9,7 +9,7 @@ RemotePairing tunnel to, the device it runs on, with no computer involved?
 
 ## Build
 
-    scripts/build-idevice.sh   # builds jkcoxson/idevice's C FFI for iOS
+    scripts/build-core.sh      # builds the Rust core (isideload + idevice) for iOS
     xcodegen                   # generates Apparition.xcodeproj from project.yml
     build-and-sign             # or open Apparition.xcodeproj and Run
 

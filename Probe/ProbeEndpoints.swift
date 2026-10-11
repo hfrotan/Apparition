@@ -58,6 +58,15 @@ enum ProbeEndpoints {
                 try await Task.sleep(for: .seconds(2))
                 return state(model)
             },
+            .command("install", "Open the tunnel at host:port and install a signed app directory through it. Returns at once; poll probeState",
+                     parameters: target + [.string("path", "Absolute path of the signed .app (accountState.signs[].signedPath)", required: true)]) { args in
+                let host = try args.requireString("host")
+                let port = args.int("port") ?? 0
+                let path = try args.requireString("path")
+                Task { await model.install(host: host, port: port, appPath: path) }
+                try await Task.sleep(for: .seconds(2))
+                return state(model)
+            },
             .command("submitPin", "Answer a pending PIN request with the 6-digit code shown in Settings",
                      parameters: [.string("pin", "The code shown on the device", required: true)]) { args in
                 model.submitPin(try args.requireString("pin"))

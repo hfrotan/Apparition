@@ -47,7 +47,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_OBJC_BRIDGING_HEADER: Probe/Apparition-Bridging-Header.h
-        HEADER_SEARCH_PATHS: $(SRCROOT)/build/idevice-out/include
-        LIBRARY_SEARCH_PATHS: $(SRCROOT)/build/idevice-out/lib
-        OTHER_LDFLAGS: -lidevice_ffi
+        HEADER_SEARCH_PATHS: $(SRCROOT)/build/core-out/include
+        LIBRARY_SEARCH_PATHS: $(SRCROOT)/build/core-out/lib
+        OTHER_LDFLAGS: -lapparition_core
         SWIFT_STRICT_CONCURRENCY: minimal

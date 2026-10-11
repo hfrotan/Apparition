@@ -2,7 +2,12 @@ import SwiftUI
 
 struct ContentView: View {
     let model: ProbeModel
+    let account: AccountModel
     @State private var pin = ""
+    @State private var email = ""
+    @State private var password = ""
+    @State private var twoFactorCode = ""
+    @State private var ipaURL = "https://github.com/utmapp/UTM/releases/download/v5.0.6/UTM-visionOS.ipa"
 
     var body: some View {
         NavigationStack {
@@ -24,6 +29,8 @@ struct ContentView: View {
                         }
                     }
                 }
+
+                accountSection
 
                 Section("Advertised services") {
                     if model.advertised.isEmpty { Text("Nothing yet").foregroundStyle(.secondary) }
@@ -71,6 +78,76 @@ struct ContentView: View {
             }
         }
         .onAppear { model.startBrowsing() }
+    }
+
+    @ViewBuilder
+    private var accountSection: some View {
+        Section("Apple ID (spike 2)") {
+            if let team = account.team {
+                Text("Signed in: team \(team.name ?? "?") (\(team.id))")
+            } else {
+                TextField("Apple ID", text: $email)
+                    .textContentType(.username)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                SecureField("Password", text: $password)
+                    .textContentType(.password)
+                TextField("Anisette server", text: Binding(get: { account.anisetteURL }, set: { account.anisetteURL = $0 }))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.caption.monospaced())
+                Button("Sign in") {
+                    let (address, secret) = (email, password)
+                    password = ""
+                    Task { await account.signIn(email: address, password: secret) }
+                }
+                .disabled(account.busy || email.isEmpty || password.isEmpty)
+            }
+            if let request = account.twoFactor {
+                Text(request.sms ? "Enter the code sent by SMS" : "Enter the code shown on your other Apple devices")
+                if let error = request.lastError { Text(error).font(.caption).foregroundStyle(.red) }
+                TextField("2FA code", text: $twoFactorCode).keyboardType(.numberPad)
+                HStack {
+                    Button("Submit") { account.answerTwoFactor("code:" + twoFactorCode); twoFactorCode = "" }
+                    Button("Send to devices") { account.answerTwoFactor("devices") }
+                    Button("Cancel", role: .cancel) { account.answerTwoFactor("abort") }
+                }
+                .buttonStyle(.bordered)
+            }
+            if account.busy { ProgressView(account.downloadProgress ?? "Working…") }
+            if let error = account.lastError { Text(error).font(.caption).foregroundStyle(.red) }
+        }
+
+        Section("Sign an IPA") {
+            TextField("IPA URL", text: $ipaURL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.caption.monospaced())
+            Button("Download") { Task { await account.download(ipaURL) } }
+                .disabled(account.busy)
+            ForEach(account.downloads, id: \.self) { file in
+                HStack {
+                    Text(file).font(.caption.monospaced())
+                    Spacer()
+                    Button("Sign") {
+                        let udid = UserDefaults.standard.string(forKey: "pairedUDID") ?? ""
+                        let name = UserDefaults.standard.string(forKey: "pairedName") ?? "Apple Vision Pro"
+                        Task { await account.sign(file: file, udid: udid, deviceName: name) }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(account.busy || account.team == nil || UserDefaults.standard.string(forKey: "pairedUDID") == nil)
+                }
+            }
+            ForEach(Array(account.signs.enumerated()), id: \.offset) { _, result in
+                VStack(alignment: .leading) {
+                    Text("\(result.file): \(result.outcome ?? "signing…")").font(.caption.monospaced())
+                    ForEach(result.bundles ?? [], id: \.path) { bundle in
+                        Text("\(bundle.path)  \(bundle.bundleId ?? "?")  get-task-allow=\(bundle.getTaskAllow.map(String.init) ?? "-")")
+                            .font(.caption2.monospaced())
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
