@@ -1,0 +1,355 @@
+import DebugTrace
+import Darwin
+import Foundation
+import Network
+import Observation
+
+private let log = DebugLogger(subsystem: Bundle.main.bundleIdentifier ?? "Apparition", category: "Probe")
+
+/// Spike 1: can an app pair with, and open an RSD tunnel to, the device it runs on?
+@MainActor @Observable
+final class ProbeModel {
+    struct Advertised: Codable, Identifiable, Sendable {
+        var id: String { "\(type)|\(name)" }
+        let name: String
+        let type: String
+        var port: Int?
+        var addresses: [String]
+        var isSelf: Bool
+        var txt: [String: String]
+    }
+
+    struct Reachability: Codable, Sendable {
+        let host: String
+        let port: Int
+        let result: String
+        let elapsedMs: Int
+    }
+
+    struct Attempt: Codable, Sendable {
+        let action: String
+        let host: String
+        let port: Int
+        let startedAt: String
+        var finishedAt: String?
+        var outcome: String?
+        var peer: IDevice.PeerDevice?
+        var deviceUUID: String?
+        var services: [IDevice.Service]?
+    }
+
+    nonisolated static let manualPairingType = "_remotepairing-manual-pairing._tcp"
+    nonisolated static let pairedType = "_remotepairing._tcp"
+    nonisolated static let hostname = "Apparition"
+    /// LocalDevVPN routes this address back to the device's own services.
+    nonisolated static let vpnLoopback = "10.7.0.1"
+
+    private(set) var advertised: [String: Advertised] = [:]
+    private(set) var browserStates: [String: String] = [:]
+    private(set) var interfaces: [String] = []
+    private(set) var reachability: [Reachability] = []
+    private(set) var attempts: [Attempt] = []
+    private(set) var busy = false
+    private(set) var pinRequested = false
+    private(set) var hasPairingFile = false
+
+    private var browsers: [NWBrowser] = []
+    private var resolvers: [String: ServiceResolver] = [:]
+    private let pinBox = PinBox()
+
+    private var pairingFileURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("apparition_rp_pairing.plist")
+    }
+
+    init() {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        IDevice.startLogging(to: documents.appendingPathComponent("idevice.log"))
+        hasPairingFile = FileManager.default.fileExists(atPath: pairingFileURL.path)
+        pinBox.onRequest = { [weak self] in
+            Task { @MainActor in self?.pinRequested = true }
+        }
+    }
+
+    // MARK: Discovery
+
+    func startBrowsing() {
+        browsers.forEach { $0.cancel() }
+        browsers = []
+        advertised = [:]
+        interfaces = Self.interfaceAddresses()
+        for type in [Self.manualPairingType, Self.pairedType] {
+            let browser = NWBrowser(for: .bonjourWithTXTRecord(type: type, domain: "local."), using: .tcp)
+            browser.stateUpdateHandler = { [weak self] state in
+                Task { @MainActor in
+                    self?.browserStates[type] = "\(state)"
+                    log.info("browser \(type, privacy: .public): \(String(describing: state), privacy: .public)")
+                }
+            }
+            browser.browseResultsChangedHandler = { [weak self] results, _ in
+                Task { @MainActor in self?.update(type: type, results: results) }
+            }
+            browser.start(queue: .main)
+            browsers.append(browser)
+        }
+    }
+
+    private func update(type: String, results: Set<NWBrowser.Result>) {
+        var seen = Set<String>()
+        for result in results {
+            guard case let .service(name, _, domain, _) = result.endpoint else { continue }
+            var txt: [String: String] = [:]
+            if case let .bonjour(record) = result.metadata {
+                for (key, entry) in record.dictionary { txt[key] = entry }
+            }
+            let key = "\(type)|\(name)"
+            seen.insert(key)
+            if advertised[key] == nil {
+                advertised[key] = Advertised(name: name, type: type, port: nil, addresses: [], isSelf: false, txt: txt)
+                resolve(key: key, name: name, type: type, domain: domain)
+            } else {
+                advertised[key]?.txt = txt
+            }
+        }
+        for key in advertised.keys where key.hasPrefix(type + "|") && !seen.contains(key) {
+            advertised[key] = nil
+            log.info("service gone: \(key, privacy: .private)")
+        }
+    }
+
+    private func resolve(key: String, name: String, type: String, domain: String) {
+        let resolver = ServiceResolver(name: name, type: type + ".", domain: domain) { [weak self] port, addresses in
+            Task { @MainActor in
+                guard let self else { return }
+                let own = Set(Self.interfaceAddresses().map { $0.components(separatedBy: " ").last ?? $0 })
+                self.advertised[key]?.port = port
+                self.advertised[key]?.addresses = addresses
+                self.advertised[key]?.isSelf = addresses.contains { own.contains($0) }
+                self.resolvers[key] = nil
+                log.info("resolved \(type, privacy: .public) port \(port, privacy: .public), \(addresses.count, privacy: .public) addresses")
+            }
+        }
+        resolvers[key] = resolver
+        resolver.start()
+    }
+
+    /// Hosts worth trying for a service: what it advertised, loopback, and the LocalDevVPN address.
+    func candidateHosts(for service: Advertised) -> [String] {
+        var hosts = service.addresses
+        for extra in ["127.0.0.1", "::1", Self.vpnLoopback] where !hosts.contains(extra) { hosts.append(extra) }
+        return hosts
+    }
+
+    // MARK: Reachability
+
+    func scan() async {
+        reachability = []
+        let targets = advertised.values.compactMap { service -> [(String, Int)]? in
+            guard let port = service.port else { return nil }
+            return candidateHosts(for: service).map { ($0, port) }
+        }.flatMap { $0 }
+        for (host, port) in targets {
+            reachability.append(await Self.probeTCP(host: host, port: port))
+        }
+    }
+
+    private static func probeTCP(host: String, port: Int) async -> Reachability {
+        let started = Date()
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        let result: String = await withCheckedContinuation { continuation in
+            let once = OnceFlag()
+            @Sendable func finish(_ text: String) {
+                guard once.claim() else { return }
+                connection.cancel()
+                continuation.resume(returning: text)
+            }
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready: finish("connected")
+                case .failed(let error): finish("failed: \(error)")
+                case .waiting(let error): finish("waiting: \(error)")
+                default: break
+                }
+            }
+            connection.start(queue: .global())
+            DispatchQueue.global().asyncAfter(deadline: .now() + 4) { finish("timeout") }
+        }
+        return Reachability(host: host, port: port, result: result,
+                            elapsedMs: Int(Date().timeIntervalSince(started) * 1000))
+    }
+
+    // MARK: Pairing and tunnel
+
+    func submitPin(_ pin: String) {
+        pinRequested = false
+        pinBox.submit(pin.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    func cancelPin() {
+        pinRequested = false
+        pinBox.submit(nil)
+    }
+
+    func forgetPairing() {
+        try? FileManager.default.removeItem(at: pairingFileURL)
+        hasPairingFile = false
+    }
+
+    func pair(host: String, port: Int) async {
+        await run(action: "pair", host: host, port: port) { file, box in
+            let peer = try IDevice.pair(host: host, port: UInt16(port), hostname: Self.hostname, file: file,
+                                        pin: PinBox.callback, context: box)
+            return { attempt in attempt.peer = peer }
+        }
+    }
+
+    func tunnel(host: String, port: Int) async {
+        await run(action: "tunnel", host: host, port: port) { file, box in
+            let (uuid, services) = try IDevice.tunnelServices(host: host, port: UInt16(port), hostname: Self.hostname,
+                                                              file: file, pin: PinBox.callback, context: box)
+            return { attempt in
+                attempt.deviceUUID = uuid
+                attempt.services = services
+            }
+        }
+    }
+
+    private func run(action: String, host: String, port: Int,
+                     _ body: @escaping @Sendable (IDevice.PairingFile, UnsafeMutableRawPointer) throws -> (@Sendable (inout Attempt) -> Void)) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        attempts.insert(Attempt(action: action, host: host, port: port, startedAt: DebugTime.iso(Date())), at: 0)
+        log.info("\(action, privacy: .public) start")
+
+        let url = pairingFileURL
+        let box = Unmanaged.passUnretained(pinBox).toOpaque()
+        let outcome: Result<(@Sendable (inout Attempt) -> Void), Error> = await Task.detached {
+            Result {
+                let file = try FileManager.default.fileExists(atPath: url.path)
+                    ? IDevice.PairingFile.load(Data(contentsOf: url))
+                    : IDevice.PairingFile.generate(hostname: Self.hostname)
+                let apply = try body(file, box)
+                // A pair-setup updates the file in place; persist it either way.
+                try file.serialized().write(to: url, options: .completeFileProtection)
+                return apply
+            }
+        }.value
+
+        pinRequested = false
+        hasPairingFile = FileManager.default.fileExists(atPath: url.path)
+        attempts[0].finishedAt = DebugTime.iso(Date())
+        switch outcome {
+        case .success(let apply):
+            apply(&attempts[0])
+            attempts[0].outcome = "ok"
+            log.info("\(action, privacy: .public) ok")
+        case .failure(let error):
+            attempts[0].outcome = "error: \(error)"
+            log.error("\(action, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    // MARK: Helpers
+
+    static func interfaceAddresses() -> [String] {
+        var head: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&head) == 0 else { return [] }
+        defer { freeifaddrs(head) }
+        var out: [String] = []
+        var cursor = head
+        while let entry = cursor {
+            defer { cursor = entry.pointee.ifa_next }
+            guard let addr = entry.pointee.ifa_addr else { continue }
+            let family = Int32(addr.pointee.sa_family)
+            guard family == AF_INET || family == AF_INET6 else { continue }
+            if let text = numericHost(addr, length: socklen_t(addr.pointee.sa_len)) {
+                out.append("\(String(cString: entry.pointee.ifa_name)) \(text)")
+            }
+        }
+        return out
+    }
+
+    nonisolated static func numericHost(_ addr: UnsafePointer<sockaddr>, length: socklen_t) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        guard getnameinfo(addr, length, &buffer, socklen_t(buffer.count), nil, 0, NI_NUMERICHOST) == 0 else { return nil }
+        return String(cString: buffer)
+    }
+}
+
+/// Hands the PIN from the UI (or the debug server) to idevice's blocking C callback.
+final class PinBox: @unchecked Sendable {
+    var onRequest: (() -> Void)?
+    private let semaphore = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    /// Owned C string; kept until the next request because idevice reads it after the callback returns.
+    private var pin: UnsafeMutablePointer<CChar>?
+
+    func submit(_ value: String?) {
+        lock.lock()
+        free(pin)
+        pin = value.flatMap { strdup($0) }
+        lock.unlock()
+        semaphore.signal()
+    }
+
+    /// Called on idevice's thread; blocks until a PIN arrives or five minutes pass.
+    func waitForPin() -> UnsafePointer<CChar>? {
+        lock.lock(); free(pin); pin = nil; lock.unlock()
+        while semaphore.wait(timeout: .now()) == .success {}  // drop stale submissions
+        onRequest?()
+        log.info("pin requested")
+        guard semaphore.wait(timeout: .now() + 300) == .success else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        return pin.map { UnsafePointer($0) }
+    }
+
+    static let callback: IDevice.PinCallback = { context in
+        guard let context else { return nil }
+        return Unmanaged<PinBox>.fromOpaque(context).takeUnretainedValue().waitForPin()
+    }
+}
+
+final class OnceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+    func claim() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if claimed { return false }
+        claimed = true
+        return true
+    }
+}
+
+/// Resolves a Bonjour service to its port and numeric addresses with NetService,
+/// which (unlike connecting through NWConnection) doesn't open a connection to it.
+final class ServiceResolver: NSObject, NetServiceDelegate, @unchecked Sendable {
+    private let service: NetService
+    private let completion: (Int, [String]) -> Void
+
+    init(name: String, type: String, domain: String, completion: @escaping (Int, [String]) -> Void) {
+        service = NetService(domain: domain, type: type, name: name)
+        self.completion = completion
+        super.init()
+        service.delegate = self
+    }
+
+    func start() {
+        service.schedule(in: .main, forMode: .common)
+        service.resolve(withTimeout: 10)
+    }
+
+    func netServiceDidResolveAddress(_ sender: NetService) {
+        let addresses = (sender.addresses ?? []).compactMap { data in
+            data.withUnsafeBytes { raw -> String? in
+                guard let base = raw.bindMemory(to: sockaddr.self).baseAddress else { return nil }
+                return ProbeModel.numericHost(base, length: socklen_t(data.count))
+            }
+        }
+        completion(sender.port, Array(Set(addresses)).sorted())
+    }
+
+    func netService(_ sender: NetService, didNotResolve errorDict: [String: NSNumber]) {
+        completion(-1, [])
+    }
+}
