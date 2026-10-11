@@ -255,16 +255,24 @@ final class ProbeModel {
 
     /// Returns the attempt's outcome: "ok", or "error: ..." (or "busy").
     @discardableResult
-    func install(host: String, port: Int, appPath: String) async -> String {
+    func install(host: String, port: Int, appPath: String, sourceIPA: String? = nil, asIPA: Bool = true) async -> String {
         let target = tunnelTarget(host: host, port: port)
         return await run(action: "install", host: host, port: port) { file, box in
             let reply = try IDevice.install(target: target, hostname: Self.hostname, file: file,
-                                            pin: PinBox.callback, context: box, appPath: appPath)
+                                            pin: PinBox.callback, context: box, appPath: appPath,
+                                            sourceIPA: sourceIPA, asIPA: asIPA)
             guard reply["ok"] as? Bool == true else {
                 throw IDevice.ProbeError(reply["error"] as? String ?? "install failed")
             }
             let elapsed = reply["elapsedMs"] as? Int ?? 0
-            return { attempt in attempt.detail = "installed in \(elapsed) ms" }
+            var detail = "installed in \(elapsed) ms"
+            if let bytes = reply["bytes"] as? Int {
+                detail += String(format: " (packed %.0f MB in %d ms, %d of %d files reused, upload %d ms)",
+                                 Double(bytes) / 1e6, reply["packMs"] as? Int ?? 0, reply["reused"] as? Int ?? 0,
+                                 reply["files"] as? Int ?? 0, reply["uploadMs"] as? Int ?? 0)
+            }
+            log.info("\(detail, privacy: .public)")
+            return { attempt in attempt.detail = detail }
         }
     }
 

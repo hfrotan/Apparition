@@ -149,11 +149,15 @@ enum IDevice {
         }
     }
 
-    /// Opens a tunnel and installs the signed app at `appPath` through it (apparition_install).
+    /// Opens a tunnel and installs the signed app at `appPath` through it, as one IPA
+    /// (apparition_install_ipa, reusing `sourceIPA`'s unchanged files), or file by file
+    /// (apparition_install) when `asIPA` is off.
     static func install(target: Target, hostname: String, file: PairingFile,
-                        pin: PinCallback, context: UnsafeMutableRawPointer, appPath: String) throws -> [String: Any] {
+                        pin: PinCallback, context: UnsafeMutableRawPointer, appPath: String,
+                        sourceIPA: String? = nil, asIPA: Bool = true) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
-            return AccountModel.call(apparition_install(adapter, handshake, appPath))
+            guard asIPA else { return AccountModel.call(apparition_install(adapter, handshake, appPath)) }
+            return AccountModel.call(apparition_install_ipa(adapter, handshake, appPath, sourceIPA))
         }
     }
 

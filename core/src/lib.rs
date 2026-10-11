@@ -21,6 +21,7 @@ use isideload::{
 use rootcause::prelude::*;
 
 mod account;
+mod ipa;
 mod tunnel;
 use serde::Serialize;
 use serde_json::{Value, json};

@@ -229,7 +229,8 @@ final class LibraryModel {
             return fail(&record, "sign failed: \(signed["error"] as? String ?? "unknown")")
         }
         let main = AccountModel.inspect(URL(fileURLWithPath: signedPath), udid: udid).first
-        let outcome = await probe.install(host: probe.defaultTunnelHost, port: 49152, appPath: signedPath)
+        let outcome = await probe.install(host: probe.defaultTunnelHost, port: 49152, appPath: signedPath,
+                                          sourceIPA: path)
         try? FileManager.default.removeItem(atPath: signedPath)
         guard outcome == "ok" else {
             return fail(&record, "install failed (LocalDevVPN connected, or the companion running?): \(outcome)")

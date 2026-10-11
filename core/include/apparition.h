@@ -44,6 +44,11 @@ char *apparition_pair_relay(const char *relay, unsigned short port, const char *
                             struct RpPairingFileHandle *pairing_file,
                             const char *(*pin)(void *context), void *pin_context);
 
+// Packs the signed app at app_path into one IPA (reusing source_ipa's unchanged entries when it is
+// non-null), uploads it and installs it; far fewer bytes than apparition_install's file-by-file upload.
+char *apparition_install_ipa(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                             const char *app_path, const char *source_ipa);
+
 // The account's development certificates and App IDs (core/src/account.rs). Revoking a
 // certificate stops apps signed with it from launching; ask the user first.
 char *apparition_list_certificates(void);
