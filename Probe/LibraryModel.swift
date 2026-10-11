@@ -170,10 +170,46 @@ final class LibraryModel {
     }
 
     nonisolated static func isDue(_ app: InstalledApp, now: Date = Date()) -> Bool {
-        guard let text = app.expiresAt,
-              let expires = try? Date(text, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true))
-        else { return true }
+        guard let expires = expiryDate(app) else { return true }
         return expires.timeIntervalSince(now) < refreshMargin
+    }
+
+    /// When the app's signing profile runs out, if it was signed here.
+    nonisolated static func expiryDate(_ app: InstalledApp) -> Date? {
+        app.expiresAt.flatMap { try? Date($0, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)) }
+    }
+
+    /// Re-signs and reinstalls one app now, due or not (the Library's per-app Refresh).
+    func refresh(appId: String) async {
+        guard let found = installed.first(where: { $0.id == appId }) else { return }
+        var record = found
+        var run = RefreshRun(startedAt: DebugTime.iso(Date()), trigger: "app")
+        await exclusive("refresh \(record.name)") {
+            let outcome = await self.signAndInstall(&record)
+            self.upsert(record)
+            run.results[record.id] = outcome
+            return outcome
+        }
+        guard !run.results.isEmpty else { return }  // busy: nothing ran
+        run.finishedAt = DebugTime.iso(Date())
+        refreshRuns.insert(run, at: 0)
+        save()
+    }
+
+    /// Forgets an installed app: Apparition stops refreshing it and deletes its kept IPA. The
+    /// app itself stays on the device until its profile expires (or the user deletes it).
+    func removeInstalled(_ id: String) {
+        guard !busy, let record = installed.first(where: { $0.id == id }) else { return }
+        installed.removeAll { $0.id == id }
+        try? FileManager.default.removeItem(at: AccountModel.appsDir.appendingPathComponent(record.ipaFile))
+        account.refreshDownloads()
+        save()
+        log.info("removed an app from the library")
+    }
+
+    /// The source's listing for an installed app (icon, newest version), if its source is still added.
+    func sourceApp(for app: InstalledApp) -> Sources.App? {
+        sources.first { $0.id == app.source }?.apps.first { $0.id == app.id }
     }
 
     private func signAndInstall(_ record: inout InstalledApp) async -> String {
