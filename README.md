@@ -54,4 +54,8 @@ offers "Use its anisette server" next to the companion; nothing switches on its 
         build-and-sign --no-mcp    # the lab app
     xcodebuild -scheme ApparitionCompanion -allowProvisioningUpdates build   # the Mac companion
 
+Run the companion from /Applications (or anywhere other users can read). mDNSResponder
+reads its Info.plist to allow the Bonjour service, and can't inside a private home or
+temp directory: the relay then still works, but Apparition won't find it on its own.
+
 Licensed MIT.

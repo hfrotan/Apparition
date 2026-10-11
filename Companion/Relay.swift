@@ -65,9 +65,11 @@ final class Relay {
 
     private func update(_ state: NWListener.State, of listener: NWListener) {
         guard listener === self.listener else { return }
-        // A Bonjour refusal fails the whole listener (macOS answers NoAuth when the service
-        // type isn't one the system has on record for this app). Apparition can still reach the
-        // relay by address, so listen again without advertising.
+        // A Bonjour refusal fails the whole listener. macOS answers NoAuth when mDNSResponder
+        // can't confirm the type is in the app's NSBonjourServices, e.g. when it can't read
+        // the bundle because the app runs from a private directory (a build folder in a
+        // mode-700 home) and falls back to a stale record. Apparition can still reach the relay
+        // by address, so listen again without advertising.
         if case .failed(.dns(let code)) = state, advertising {
             log.error("Bonjour refused the service (\(code, privacy: .public)); relaying without it")
             advertising = false
