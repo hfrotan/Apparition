@@ -3,6 +3,8 @@ import SwiftUI
 struct ContentView: View {
     let model: ProbeModel
     let account: AccountModel
+    let library: LibraryModel
+    @State private var sourceURL = "github:utmapp/UTM"
     @State private var pin = ""
     @State private var email = ""
     @State private var password = ""
@@ -31,6 +33,7 @@ struct ContentView: View {
                 }
 
                 accountSection
+                librarySection
 
                 Section("Advertised services") {
                     if model.advertised.isEmpty { Text("Nothing yet").foregroundStyle(.secondary) }
@@ -81,6 +84,41 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private var librarySection: some View {
+        Section("Library (spike 5)") {
+            ForEach(library.installed) { app in
+                VStack(alignment: .leading) {
+                    Text("\(app.name) \(app.version)")
+                    Text("expires \(app.expiresAt ?? "?")").font(.caption)
+                    if let error = app.lastError { Text(error).font(.caption).foregroundStyle(.red) }
+                }
+            }
+            Button("Refresh all now") { Task { await library.refresh(force: true, trigger: "button") } }
+                .disabled(library.busy || library.installed.isEmpty)
+            ForEach(library.sources) { source in
+                ForEach(source.apps) { app in
+                    Button("Install \(app.name) \(app.version)") {
+                        Task { await library.install(sourceId: source.id, appId: app.id, stripExtensions: true) }
+                    }
+                    .disabled(library.busy)
+                }
+                if let error = source.error { Text(error).font(.caption).foregroundStyle(.red) }
+            }
+            HStack {
+                TextField("Source URL or github:owner/repo", text: $sourceURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Add") {
+                    let url = sourceURL
+                    let pattern = url.hasPrefix("github:") ? "visionOS" : nil
+                    Task { await library.addSource(url, assetPattern: pattern, prereleases: true) }
+                }
+            }
+            if let status = library.status { Text(status).font(.caption) }
+        }
+    }
+
+    @ViewBuilder
     private var accountSection: some View {
         Section("Apple ID (spike 2)") {
             if let team = account.team {
@@ -92,6 +130,8 @@ struct ContentView: View {
                     .autocorrectionDisabled()
                 SecureField("Password", text: $password)
                     .textContentType(.password)
+                Toggle("Remember password on this device (for automatic refresh)",
+                       isOn: Binding(get: { account.rememberPassword }, set: { account.rememberPassword = $0 }))
                 TextField("Anisette server", text: Binding(get: { account.anisetteURL }, set: { account.anisetteURL = $0 }))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()

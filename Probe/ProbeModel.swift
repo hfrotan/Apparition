@@ -216,7 +216,19 @@ final class ProbeModel {
         }
     }
 
-    func install(host: String, port: Int, appPath: String) async {
+    /// Reads the device's UDID and name through the tunnel and saves them for signing.
+    @discardableResult
+    func identify(host: String, port: Int) async -> String {
+        await run(action: "identify", host: host, port: port) { file, box in
+            let peer = try IDevice.identify(host: host, port: UInt16(port), hostname: Self.hostname, file: file,
+                                            pin: PinBox.callback, context: box)
+            return { attempt in attempt.peer = peer }
+        }
+    }
+
+    /// Returns the attempt's outcome: "ok", or "error: ..." (or "busy").
+    @discardableResult
+    func install(host: String, port: Int, appPath: String) async -> String {
         await run(action: "install", host: host, port: port) { file, box in
             let reply = try IDevice.install(host: host, port: UInt16(port), hostname: Self.hostname, file: file,
                                             pin: PinBox.callback, context: box, appPath: appPath)
@@ -245,9 +257,10 @@ final class ProbeModel {
         }
     }
 
+    @discardableResult
     private func run(action: String, host: String, port: Int,
-                     _ body: @escaping @Sendable (IDevice.PairingFile, UnsafeMutableRawPointer) throws -> (@Sendable (inout Attempt) -> Void)) async {
-        guard !busy else { return }
+                     _ body: @escaping @Sendable (IDevice.PairingFile, UnsafeMutableRawPointer) throws -> (@Sendable (inout Attempt) -> Void)) async -> String {
+        guard !busy else { return "busy" }
         busy = true
         defer { busy = false }
         attempts.insert(Attempt(action: action, host: host, port: port, startedAt: DebugTime.iso(Date())), at: 0)
@@ -283,6 +296,7 @@ final class ProbeModel {
             attempts[0].outcome = "error: \(error)"
             log.error("\(action, privacy: .public) failed: \(String(describing: error), privacy: .public)")
         }
+        return attempts[0].outcome ?? "unknown"
     }
 
     // MARK: Helpers

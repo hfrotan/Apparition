@@ -34,6 +34,10 @@ targets:
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        UIBackgroundModes:
+          - fetch
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.illixion.apparition.refresh
         NSLocalNetworkUsageDescription: Apparition pairs with this device's own developer services over the local network.
         NSBonjourServices:
           - _remotepairing._tcp

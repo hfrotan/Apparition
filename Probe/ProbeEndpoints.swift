@@ -80,6 +80,14 @@ enum ProbeEndpoints {
                 try await Task.sleep(for: .seconds(2))
                 return state(model)
             },
+            .command("identify", "Read the device's UDID and name through the tunnel at host:port and save them for signing. Returns at once; poll probeState",
+                     parameters: target) { args in
+                let host = try args.requireString("host")
+                let port = args.int("port") ?? 0
+                Task { await model.identify(host: host, port: port) }
+                try await Task.sleep(for: .seconds(2))
+                return state(model)
+            },
             .command("submitPin", "Answer a pending PIN request with the 6-digit code shown in Settings",
                      parameters: [.string("pin", "The code shown on the device", required: true)]) { args in
                 model.submitPin(try args.requireString("pin"))

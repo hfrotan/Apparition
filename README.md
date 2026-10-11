@@ -7,6 +7,14 @@ launch them with debugger-prepared JIT, all from the headset.
 Early spike stage. `Probe/` is spike 1: can an app pair with, and open a
 RemotePairing tunnel to, the device it runs on, with no computer involved?
 
+Spike 5 (sources and refresh) works on the headset. Sources are AltStore/SideStore JSON,
+or `github:owner/repo` for apps published only as release assets (UTM's visionOS build).
+Installed apps keep their IPA in Documents/apps, so a refresh re-signs and reinstalls
+without the network, and their data survives. With "Remember password" on, the password
+stays in this device's Keychain, and a refresh can sign in with nobody present (Apple
+skips 2FA for a device it already trusts). A background app-refresh task runs this about
+every 12 hours. It needs LocalDevVPN connected, and its firing is not verified yet.
+
 `Lab/` is a test app for JIT experiments, launched through the probe's `launchJIT`.
 Its first experiment (2026-10-11, visionOS 27.2): bytes the debugger writes into the
 app's own signed `__TEXT` keep running after it detaches, including code first run

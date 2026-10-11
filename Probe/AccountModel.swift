@@ -48,6 +48,15 @@ final class AccountModel {
 
     nonisolated static let defaultAnisette = "http://172.20.48.198:6969"
 
+    /// Keep the password in this device's Keychain so refreshes can sign in without anyone
+    /// present. Off by default; turning it off deletes the stored password.
+    var rememberPassword: Bool = UserDefaults.standard.bool(forKey: "rememberPassword") {
+        didSet {
+            UserDefaults.standard.set(rememberPassword, forKey: "rememberPassword")
+            if !rememberPassword { Keychain.delete() }
+        }
+    }
+
     var anisetteURL: String = UserDefaults.standard.string(forKey: "anisetteURL") ?? AccountModel.defaultAnisette {
         didSet { UserDefaults.standard.set(anisetteURL, forKey: "anisetteURL") }
     }
@@ -106,6 +115,8 @@ final class AccountModel {
         }.value
 
         if reply["ok"] as? Bool == true {
+            UserDefaults.standard.set(email, forKey: "appleID")
+            if rememberPassword { Keychain.save(password, account: email) }
             self.email = reply["email"] as? String
             team = Self.team(reply["team"])
             teams = (reply["teams"] as? [Any] ?? []).compactMap(Self.team)
@@ -114,6 +125,32 @@ final class AccountModel {
             lastError = reply["error"] as? String ?? "unknown error"
             log.error("sign-in failed: \(self.lastError ?? "", privacy: .private)")
         }
+    }
+
+    /// Signs in with the Keychain password, for refreshes with nobody present. A 2FA prompt
+    /// can't be answered here, so it aborts; Apple skips 2FA for a device it already trusts.
+    func signInSilently() async -> Bool {
+        if team != nil { return true }
+        guard !busy, rememberPassword, let email = UserDefaults.standard.string(forKey: "appleID"),
+              let password = Keychain.load(account: email) else { return false }
+        busy = true
+        defer { busy = false }
+        log.info("silent sign-in start")
+        let anisette = anisetteURL
+        let dataDir = Self.dataDir.path
+        let reply = await Task.detached {
+            Self.call(apparition_login(email, password, anisette, dataDir, AccountModel.twoFactorCallback, nil))
+        }.value
+        guard reply["ok"] as? Bool == true else {
+            lastError = reply["error"] as? String ?? "unknown error"
+            log.error("silent sign-in failed: \(self.lastError ?? "", privacy: .private)")
+            return false
+        }
+        self.email = reply["email"] as? String
+        team = Self.team(reply["team"])
+        teams = (reply["teams"] as? [Any] ?? []).compactMap(Self.team)
+        log.info("silent sign-in ok")
+        return true
     }
 
     /// `code:123456`, `devices`, `sms:<id>`, `resend` or `abort`.
@@ -166,7 +203,7 @@ final class AccountModel {
         log.info("sign start: \(file, privacy: .public)")
 
         let path = Self.appsDir.appendingPathComponent(file).path
-        let reply = await Task.detached { Self.call(apparition_sign(path, udid, deviceName, stripExtensions)) }.value
+        let reply = await Self.signFile(path, udid: udid, deviceName: deviceName, stripExtensions: stripExtensions)
         signs[0].finishedAt = DebugTime.iso(Date())
         if reply["ok"] as? Bool == true, let signed = reply["signedPath"] as? String {
             signs[0].outcome = "ok"
@@ -181,6 +218,12 @@ final class AccountModel {
             signs[0].outcome = "error: \(reply["error"] as? String ?? "unknown")"
             log.error("sign failed: \(self.signs[0].outcome ?? "", privacy: .public)")
         }
+    }
+
+    /// Registers the device if needed and signs the IPA at `path`; `{ok, signedPath, ...}`.
+    nonisolated static func signFile(_ path: String, udid: String, deviceName: String,
+                                     stripExtensions: Bool) async -> [String: Any] {
+        await Task.detached { call(apparition_sign(path, udid, deviceName, stripExtensions)) }.value
     }
 
     func refreshSession() {
@@ -241,5 +284,46 @@ final class AccountModel {
         else { return nil }
         let plist = data.subdata(in: start.lowerBound..<end.upperBound)
         return (try? PropertyListSerialization.propertyList(from: plist, format: nil)) as? [String: Any]
+    }
+}
+
+/// The Apple ID password, stored only on this device and only when the user opts in.
+enum Keychain {
+    private static let service = "com.illixion.apparition.appleid"
+
+    static func save(_ password: String, account: String) {
+        delete()
+        let item: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecValueData as String: Data(password.utf8),
+        ]
+        let status = SecItemAdd(item as CFDictionary, nil)
+        if status != errSecSuccess { log.error("keychain save failed: \(status, privacy: .public)") }
+    }
+
+    static func load(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+        ]
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func delete() {
+        SecItemDelete([kSecClass as String: kSecClassGenericPassword,
+                       kSecAttrService as String: service] as CFDictionary)
+    }
+
+    static var hasPassword: Bool {
+        guard let account = UserDefaults.standard.string(forKey: "appleID") else { return false }
+        return load(account: account) != nil
     }
 }

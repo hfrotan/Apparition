@@ -137,6 +137,35 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel and reads the device's UDID and name from lockdown. Pair-verify doesn't
+    /// return them (only pair-setup does), and signing needs the UDID.
+    static func identify(host: String, port: UInt16, hostname: String, file: PairingFile,
+                         pin: PinCallback, context: UnsafeMutableRawPointer) throws -> PeerDevice {
+        try withSockaddr(host: host, port: port) { addr, length in
+            var adapter: OpaquePointer?
+            var handshake: OpaquePointer?
+            try check(tunnel_create_rppairing(addr, length, hostname, file.handle, pin, context, &adapter, &handshake))
+            defer {
+                if let handshake { rsd_handshake_free(handshake) }
+                if let adapter { adapter_free(adapter) }
+            }
+            var client: OpaquePointer?
+            try check(lockdownd_connect_rsd(adapter, handshake, &client))
+            defer { if let client { lockdownd_client_free(client) } }
+            func value(_ key: String) throws -> String {
+                var node: plist_t?
+                try check(lockdownd_get_value(client, key, nil, &node))
+                guard let node else { return "" }
+                defer { plist_free(node) }
+                var text: UnsafeMutablePointer<CChar>?
+                plist_get_string_val(node, &text)
+                defer { if let text { plist_mem_free(text) } }
+                return text.map { String(cString: $0) } ?? ""
+            }
+            return PeerDevice(name: try value("DeviceName"), model: try value("ProductType"), udid: try value("UniqueDeviceID"))
+        }
+    }
+
     /// Pair-verify (pairing first if needed), open the CDTunnel and run the RSD handshake.
     /// Returns the device UUID and its RSD service list; the tunnel is closed afterwards.
     static func tunnelServices(host: String, port: UInt16, hostname: String, file: PairingFile,
