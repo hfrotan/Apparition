@@ -33,6 +33,22 @@ app's own signed `__TEXT` keep running after it detaches, including code first r
 only after the detach and a site rewritten to branch to a trampoline. Apparition serves
 this through an experimental JIT26 command, `x16 = 2` (copy x2 bytes from x1 to x0).
 
+## Shortcuts automation
+
+Background refresh is not reliable, so the dependable way to keep apps signed is a
+Shortcuts automation. Apparition offers three actions: **Refresh Apps** (apps that expire
+within 3 days, or all with "All Apps"; returns how many it refreshed), **Launch with JIT**
+(an installed app, through the companion or LocalDevVPN) and **Open Apparition**. Each
+opens Apparition and runs there, because a refresh takes 40 to 150 s. Siri knows them too:
+"Refresh apps in Apparition", "Launch UTM with JIT in Apparition".
+
+To refresh every day: Shortcuts, Automation, New Automation, Time of Day, pick a time
+you are usually wearing the headset, Daily, Run Immediately, then add Apparition's
+Refresh Apps action. It needs "Remember password" on and the companion (or LocalDevVPN)
+reachable. Apps refreshed are reported as "Refreshed UTM; expires Oct 18"; when nothing
+is due it says when the next app expires; and when nothing could be refreshed the action
+fails with the reason (not signed in, companion unreachable), so the automation shows it.
+
 ## Anisette
 
 Signing in to Apple needs an anisette-v3 server. Apparition ships none: enter the URL of
