@@ -14,18 +14,20 @@ enum ProbeEndpoints {
         let busy: Bool
         let pinRequested: Bool
         let hasPairingFile: Bool
+        let relay: String?
     }
 
     static func state(_ model: ProbeModel) -> State {
         State(browserStates: model.browserStates, interfaces: model.interfaces,
               advertised: model.advertised.values.sorted { $0.id < $1.id },
               reachability: model.reachability, attempts: model.attempts,
-              busy: model.busy, pinRequested: model.pinRequested, hasPairingFile: model.hasPairingFile)
+              busy: model.busy, pinRequested: model.pinRequested, hasPairingFile: model.hasPairingFile,
+              relay: model.relay)
     }
 
     static func register(_ model: ProbeModel) {
         let target: [DebugParameter] = [
-            .string("host", "Numeric address to connect to (an advertised address, 127.0.0.1, ::1 or 10.7.0.1)", required: true),
+            .string("host", "Numeric address to connect to (10.7.0.1 for LocalDevVPN), or \"relay\" to go through the companion set with setRelay", required: true),
             .integer("port", "TCP port of the RemotePairing service", required: true, range: 1...65535),
         ]
         DebugSurface.shared.register([
@@ -86,6 +88,12 @@ enum ProbeEndpoints {
                 let port = args.int("port") ?? 0
                 Task { await model.identify(host: host, port: port) }
                 try await Task.sleep(for: .seconds(2))
+                return state(model)
+            },
+            .command("setRelay", "Set the Apparition Companion relay (ip:port), or clear it with an empty string",
+                     parameters: [.string("relay", "e.g. 172.20.48.198:49160", required: true)]) { args in
+                let relay = try args.requireString("relay").trimmingCharacters(in: .whitespaces)
+                model.relay = relay.isEmpty ? nil : relay
                 return state(model)
             },
             .command("submitPin", "Answer a pending PIN request with the 6-digit code shown in Settings",

@@ -15,6 +15,15 @@ stays in this device's Keychain, and a refresh can sign in with nobody present (
 skips 2FA for a device it already trusts). A background app-refresh task runs this about
 every 12 hours. It needs LocalDevVPN connected, and its firing is not verified yet.
 
+`Companion/` is Apparition Companion, an optional macOS menu-bar app. It replaces
+LocalDevVPN: the headset resets connections it makes to its own RemotePairing service,
+so Apparition asks the companion (TCP 49160) to connect back to it. The headset then sees
+the connection coming from the Mac. The companion only ever connects back to the address
+that asked, and it carries only ciphertext (pair-verify, then TLS-PSK) with no keys. With
+the headset on Tailscale, which LocalDevVPN no longer occupies, a companion at home keeps
+signing and JIT working from anywhere. Tested 2026-10-11 with LocalDevVPN off: tunnel,
+refresh (109 s over the LAN, 150 s over Tailscale) and JIT launch.
+
 `Lab/` is a test app for JIT experiments, launched through the probe's `launchJIT`.
 Its first experiment (2026-10-11, visionOS 27.2): bytes the debugger writes into the
 app's own signed `__TEXT` keep running after it detaches, including code first run
@@ -28,5 +37,6 @@ this through an experimental JIT26 command, `x16 = 2` (copy x2 bytes from x1 to 
     build-and-sign             # or open Apparition.xcodeproj and Run
     SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab BUILD_BUNDLE_ID=com.illixion.apparition.lab \
         build-and-sign --no-mcp    # the lab app
+    xcodebuild -scheme ApparitionCompanion -allowProvisioningUpdates build   # the Mac companion
 
 Licensed MIT.

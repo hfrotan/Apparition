@@ -45,6 +45,23 @@ final class ProbeModel {
     nonisolated static let hostname = "Apparition"
     /// LocalDevVPN routes this address back to the device's own services.
     nonisolated static let vpnLoopback = "10.7.0.1"
+    /// Pass as `host` to go through the Apparition Companion relay instead.
+    nonisolated static let relayHost = "relay"
+
+    /// The Apparition Companion relay ("ip:port"), or nil to use LocalDevVPN.
+    var relay: String? = UserDefaults.standard.string(forKey: "relay") {
+        didSet { UserDefaults.standard.set(relay, forKey: "relay") }
+    }
+
+    /// Where unattended work (installs, refreshes) opens its tunnel: the relay when one is set.
+    var defaultTunnelHost: String { relay == nil ? Self.vpnLoopback : Self.relayHost }
+
+    func tunnelTarget(host: String, port: Int) -> IDevice.Target {
+        if host == Self.relayHost, let relay {
+            return IDevice.Target(host: "0.0.0.0", port: UInt16(port), relay: relay)
+        }
+        return IDevice.Target(host: host, port: UInt16(port), relay: nil)
+    }
 
     private(set) var advertised: [String: Advertised] = [:]
     private(set) var browserStates: [String: String] = [:]
@@ -206,8 +223,9 @@ final class ProbeModel {
     }
 
     func tunnel(host: String, port: Int) async {
+        let target = tunnelTarget(host: host, port: port)
         await run(action: "tunnel", host: host, port: port) { file, box in
-            let (uuid, services) = try IDevice.tunnelServices(host: host, port: UInt16(port), hostname: Self.hostname,
+            let (uuid, services) = try IDevice.tunnelServices(target: target, hostname: Self.hostname,
                                                               file: file, pin: PinBox.callback, context: box)
             return { attempt in
                 attempt.deviceUUID = uuid
@@ -219,8 +237,9 @@ final class ProbeModel {
     /// Reads the device's UDID and name through the tunnel and saves them for signing.
     @discardableResult
     func identify(host: String, port: Int) async -> String {
-        await run(action: "identify", host: host, port: port) { file, box in
-            let peer = try IDevice.identify(host: host, port: UInt16(port), hostname: Self.hostname, file: file,
+        let target = tunnelTarget(host: host, port: port)
+        return await run(action: "identify", host: host, port: port) { file, box in
+            let peer = try IDevice.identify(target: target, hostname: Self.hostname, file: file,
                                             pin: PinBox.callback, context: box)
             return { attempt in attempt.peer = peer }
         }
@@ -229,8 +248,9 @@ final class ProbeModel {
     /// Returns the attempt's outcome: "ok", or "error: ..." (or "busy").
     @discardableResult
     func install(host: String, port: Int, appPath: String) async -> String {
-        await run(action: "install", host: host, port: port) { file, box in
-            let reply = try IDevice.install(host: host, port: UInt16(port), hostname: Self.hostname, file: file,
+        let target = tunnelTarget(host: host, port: port)
+        return await run(action: "install", host: host, port: port) { file, box in
+            let reply = try IDevice.install(target: target, hostname: Self.hostname, file: file,
                                             pin: PinBox.callback, context: box, appPath: appPath)
             guard reply["ok"] as? Bool == true else {
                 throw IDevice.ProbeError(reply["error"] as? String ?? "install failed")
@@ -241,8 +261,9 @@ final class ProbeModel {
     }
 
     func launchJIT(host: String, port: Int, bundleId: String, waitSeconds: Int) async {
+        let target = tunnelTarget(host: host, port: port)
         await run(action: "jit", host: host, port: port) { file, box in
-            let reply = try IDevice.launchJIT(host: host, port: UInt16(port), hostname: Self.hostname, file: file,
+            let reply = try IDevice.launchJIT(target: target, hostname: Self.hostname, file: file,
                                               pin: PinBox.callback, context: box,
                                               bundleId: bundleId, waitSeconds: UInt32(waitSeconds))
             guard reply["ok"] as? Bool == true else {

@@ -164,10 +164,10 @@ final class LibraryModel {
 
     private func signAndInstall(_ record: inout InstalledApp) async -> String {
         if UserDefaults.standard.string(forKey: "pairedUDID") == nil {
-            await probe.identify(host: ProbeModel.vpnLoopback, port: 49152)
+            await probe.identify(host: probe.defaultTunnelHost, port: 49152)
         }
         guard let udid = UserDefaults.standard.string(forKey: "pairedUDID") else {
-            return fail(&record, "can't read this device's UDID (paired, and LocalDevVPN connected?)")
+            return fail(&record, "can't read this device's UDID (paired, and LocalDevVPN or the companion up?)")
         }
         let name = UserDefaults.standard.string(forKey: "pairedName") ?? "Apple Vision Pro"
         guard await account.signInSilently() else {
@@ -179,10 +179,10 @@ final class LibraryModel {
             return fail(&record, "sign failed: \(signed["error"] as? String ?? "unknown")")
         }
         let main = AccountModel.inspect(URL(fileURLWithPath: signedPath), udid: udid).first
-        let outcome = await probe.install(host: ProbeModel.vpnLoopback, port: 49152, appPath: signedPath)
+        let outcome = await probe.install(host: probe.defaultTunnelHost, port: 49152, appPath: signedPath)
         try? FileManager.default.removeItem(atPath: signedPath)
         guard outcome == "ok" else {
-            return fail(&record, "install failed (is LocalDevVPN connected?): \(outcome)")
+            return fail(&record, "install failed (LocalDevVPN connected, or the companion running?): \(outcome)")
         }
         record.installedBundleId = main?.bundleId
         record.signedAt = DebugTime.iso(Date())

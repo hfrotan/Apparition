@@ -19,6 +19,8 @@ use isideload::{
     util::{callbacks::MaxCertsCallbackBox, storage::SideloadingStorage},
 };
 use rootcause::prelude::*;
+
+mod tunnel;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -508,7 +510,22 @@ pub unsafe extern "C" fn apparition_launch_jit(
                 }
                 let stop = match pending.take() {
                     Some(stop) => stop,
-                    None => gdb.request("c").await?,
+                    None => {
+                        // An app that never asks (UTM until a VM starts) never stops, so the
+                        // wait has to end while it runs: interrupt it, then detach.
+                        gdb.proxy.send_raw(&Gdb::frame("c")).await?;
+                        match tokio::time::timeout(deadline.saturating_sub(started.elapsed()), gdb.read()).await {
+                            Ok(stop) => stop?,
+                            Err(_) => {
+                                log(&mut events, "timed out waiting for a JIT request; detaching".into());
+                                gdb.proxy.send_raw(&[0x03]).await?;
+                                gdb.read().await?;
+                                gdb.request("D").await.ok();
+                                detached = true;
+                                break;
+                            }
+                        }
+                    }
                 };
                 if stop.starts_with('W') || stop.starts_with('X') {
                     log(&mut events, format!("process exited: {stop}"));

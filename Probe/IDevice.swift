@@ -93,6 +93,33 @@ enum IDevice {
 
     typealias PinCallback = @convention(c) (UnsafeMutableRawPointer?) -> UnsafePointer<CChar>?
 
+    /// Where a tunnel goes: straight to host:port (LocalDevVPN's 10.7.0.1), or through a
+    /// Apparition Companion relay ("ip:port"), which connects back to this device on `port`.
+    struct Target: Sendable, CustomStringConvertible {
+        let host: String
+        let port: UInt16
+        let relay: String?
+        var description: String { relay.map { "relay \($0) -> :\(port)" } ?? "\(host):\(port)" }
+    }
+
+    /// Opens the tunnel (apparition_tunnel_create), runs `body` with its handles, then frees them.
+    static func withTunnel<T>(_ target: Target, hostname: String, file: PairingFile, pin: PinCallback,
+                              context: UnsafeMutableRawPointer,
+                              _ body: (OpaquePointer?, OpaquePointer?) throws -> T) throws -> T {
+        var adapter: OpaquePointer?
+        var handshake: OpaquePointer?
+        let reply = AccountModel.call(apparition_tunnel_create(target.host, target.port, target.relay, hostname, file.handle,
+                                                           pin, context, &adapter, &handshake))
+        defer {
+            if let handshake { rsd_handshake_free(handshake) }
+            if let adapter { adapter_free(adapter) }
+        }
+        guard reply["ok"] as? Bool == true else {
+            throw ProbeError("tunnel via \(target): \(reply["error"] as? String ?? "failed")")
+        }
+        return try body(adapter, handshake)
+    }
+
     /// Pair-setup (or pair-verify) against a RemotePairing service, without a tunnel.
     static func pair(host: String, port: UInt16, hostname: String, file: PairingFile,
                      pin: PinCallback, context: UnsafeMutableRawPointer) throws -> PeerDevice? {
@@ -107,48 +134,27 @@ enum IDevice {
     }
 
     /// Opens a tunnel, launches the app under the debugger and serves its JIT requests.
-    static func launchJIT(host: String, port: UInt16, hostname: String, file: PairingFile,
+    static func launchJIT(target: Target, hostname: String, file: PairingFile,
                           pin: PinCallback, context: UnsafeMutableRawPointer,
                           bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
-        try withSockaddr(host: host, port: port) { addr, length in
-            var adapter: OpaquePointer?
-            var handshake: OpaquePointer?
-            try check(tunnel_create_rppairing(addr, length, hostname, file.handle, pin, context, &adapter, &handshake))
-            defer {
-                if let handshake { rsd_handshake_free(handshake) }
-                if let adapter { adapter_free(adapter) }
-            }
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             return AccountModel.call(apparition_launch_jit(adapter, handshake, bundleId, waitSeconds))
         }
     }
 
     /// Opens a tunnel and installs the signed app at `appPath` through it (apparition_install).
-    static func install(host: String, port: UInt16, hostname: String, file: PairingFile,
+    static func install(target: Target, hostname: String, file: PairingFile,
                         pin: PinCallback, context: UnsafeMutableRawPointer, appPath: String) throws -> [String: Any] {
-        try withSockaddr(host: host, port: port) { addr, length in
-            var adapter: OpaquePointer?
-            var handshake: OpaquePointer?
-            try check(tunnel_create_rppairing(addr, length, hostname, file.handle, pin, context, &adapter, &handshake))
-            defer {
-                if let handshake { rsd_handshake_free(handshake) }
-                if let adapter { adapter_free(adapter) }
-            }
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             return AccountModel.call(apparition_install(adapter, handshake, appPath))
         }
     }
 
     /// Opens a tunnel and reads the device's UDID and name from lockdown. Pair-verify doesn't
     /// return them (only pair-setup does), and signing needs the UDID.
-    static func identify(host: String, port: UInt16, hostname: String, file: PairingFile,
+    static func identify(target: Target, hostname: String, file: PairingFile,
                          pin: PinCallback, context: UnsafeMutableRawPointer) throws -> PeerDevice {
-        try withSockaddr(host: host, port: port) { addr, length in
-            var adapter: OpaquePointer?
-            var handshake: OpaquePointer?
-            try check(tunnel_create_rppairing(addr, length, hostname, file.handle, pin, context, &adapter, &handshake))
-            defer {
-                if let handshake { rsd_handshake_free(handshake) }
-                if let adapter { adapter_free(adapter) }
-            }
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             var client: OpaquePointer?
             try check(lockdownd_connect_rsd(adapter, handshake, &client))
             defer { if let client { lockdownd_client_free(client) } }
@@ -168,16 +174,9 @@ enum IDevice {
 
     /// Pair-verify (pairing first if needed), open the CDTunnel and run the RSD handshake.
     /// Returns the device UUID and its RSD service list; the tunnel is closed afterwards.
-    static func tunnelServices(host: String, port: UInt16, hostname: String, file: PairingFile,
+    static func tunnelServices(target: Target, hostname: String, file: PairingFile,
                                pin: PinCallback, context: UnsafeMutableRawPointer) throws -> (uuid: String, services: [Service]) {
-        try withSockaddr(host: host, port: port) { addr, length in
-            var adapter: OpaquePointer?
-            var handshake: OpaquePointer?
-            try check(tunnel_create_rppairing(addr, length, hostname, file.handle, pin, context, &adapter, &handshake))
-            defer {
-                if let handshake { rsd_handshake_free(handshake) }
-                if let adapter { adapter_free(adapter) }
-            }
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             guard let handshake else { throw ProbeError("tunnel_create_rppairing returned no handshake") }
 
             var uuidPointer: UnsafeMutablePointer<CChar>?

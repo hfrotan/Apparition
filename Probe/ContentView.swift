@@ -86,6 +86,12 @@ struct ContentView: View {
     @ViewBuilder
     private var librarySection: some View {
         Section("Library (spike 5)") {
+            TextField("Companion relay (ip:49160), empty for LocalDevVPN",
+                      text: Binding(get: { model.relay ?? "" },
+                                    set: { model.relay = $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }))
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.caption.monospaced())
             ForEach(library.installed) { app in
                 VStack(alignment: .leading) {
                     Text("\(app.name) \(app.version)")
