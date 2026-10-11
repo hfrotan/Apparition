@@ -21,5 +21,9 @@ char *apparition_sign(const char *app_path, const char *udid, const char *device
 // Handles from idevice's tunnel_create_rppairing; borrowed, not freed.
 char *apparition_install(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                      const char *app_path);
+// Launches bundle_id suspended, attaches debugserver over the tunnel and serves the
+// brk #0x69 (UTM) and brk #0xf00d (JIT26) protocols, waiting up to wait_seconds.
+char *apparition_launch_jit(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
+                        const char *bundle_id, unsigned int wait_seconds);
 
 #endif

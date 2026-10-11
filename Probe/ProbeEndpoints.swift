@@ -67,6 +67,19 @@ enum ProbeEndpoints {
                 try await Task.sleep(for: .seconds(2))
                 return state(model)
             },
+            .command("launchJIT", "Launch an app under the debugger through the tunnel at host:port and serve its JIT requests (UTM asks when a VM starts). Returns at once; poll probeState",
+                     parameters: target + [
+                        .string("bundleId", "Installed bundle ID, e.g. com.utmapp.UTM.<team>", required: true),
+                        .integer("waitSeconds", "How long to wait for the first JIT request", default: 600, range: 10...3600),
+                     ]) { args in
+                let host = try args.requireString("host")
+                let port = args.int("port") ?? 0
+                let bundleId = try args.requireString("bundleId")
+                let wait = args.int("waitSeconds") ?? 600
+                Task { await model.launchJIT(host: host, port: port, bundleId: bundleId, waitSeconds: wait) }
+                try await Task.sleep(for: .seconds(2))
+                return state(model)
+            },
             .command("submitPin", "Answer a pending PIN request with the 6-digit code shown in Settings",
                      parameters: [.string("pin", "The code shown on the device", required: true)]) { args in
                 model.submitPin(try args.requireString("pin"))

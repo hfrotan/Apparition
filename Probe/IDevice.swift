@@ -106,6 +106,22 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel, launches the app under the debugger and serves its JIT requests.
+    static func launchJIT(host: String, port: UInt16, hostname: String, file: PairingFile,
+                          pin: PinCallback, context: UnsafeMutableRawPointer,
+                          bundleId: String, waitSeconds: UInt32) throws -> [String: Any] {
+        try withSockaddr(host: host, port: port) { addr, length in
+            var adapter: OpaquePointer?
+            var handshake: OpaquePointer?
+            try check(tunnel_create_rppairing(addr, length, hostname, file.handle, pin, context, &adapter, &handshake))
+            defer {
+                if let handshake { rsd_handshake_free(handshake) }
+                if let adapter { adapter_free(adapter) }
+            }
+            return AccountModel.call(apparition_launch_jit(adapter, handshake, bundleId, waitSeconds))
+        }
+    }
+
     /// Opens a tunnel and installs the signed app at `appPath` through it (apparition_install).
     static func install(host: String, port: UInt16, hostname: String, file: PairingFile,
                         pin: PinCallback, context: UnsafeMutableRawPointer, appPath: String) throws -> [String: Any] {

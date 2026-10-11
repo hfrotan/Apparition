@@ -37,6 +37,7 @@ final class ProbeModel {
         var deviceUUID: String?
         var services: [IDevice.Service]?
         var detail: String?
+        var events: [String]?
     }
 
     nonisolated static let manualPairingType = "_remotepairing-manual-pairing._tcp"
@@ -224,6 +225,23 @@ final class ProbeModel {
             }
             let elapsed = reply["elapsedMs"] as? Int ?? 0
             return { attempt in attempt.detail = "installed in \(elapsed) ms" }
+        }
+    }
+
+    func launchJIT(host: String, port: Int, bundleId: String, waitSeconds: Int) async {
+        await run(action: "jit", host: host, port: port) { file, box in
+            let reply = try IDevice.launchJIT(host: host, port: UInt16(port), hostname: Self.hostname, file: file,
+                                              pin: PinBox.callback, context: box,
+                                              bundleId: bundleId, waitSeconds: UInt32(waitSeconds))
+            guard reply["ok"] as? Bool == true else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "JIT launch failed")
+            }
+            let events = reply["events"] as? [String]
+            let detail = "pid \(reply["pid"] ?? "?"), prepared \(reply["preparedBytes"] ?? 0) bytes, detached \(reply["detached"] ?? false)"
+            return { attempt in
+                attempt.detail = detail
+                attempt.events = events
+            }
         }
     }
 
