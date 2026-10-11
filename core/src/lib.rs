@@ -21,6 +21,7 @@ use isideload::{
 use rootcause::prelude::*;
 
 mod account;
+mod identity;
 mod ipa;
 mod tunnel;
 use serde::Serialize;
@@ -311,7 +312,7 @@ pub unsafe extern "C" fn apparition_sign(
 /// Unpacks an IPA next to it and removes `Extensions/` (ExtensionKit) from the app, which a
 /// re-signed app can't keep: installd rejects the extension under a renamed bundle ID.
 /// Returns the unpacked .app and the names removed.
-fn extract_without_extensions(ipa: &std::path::Path) -> Result<(PathBuf, Vec<String>), Report> {
+pub(crate) fn extract_without_extensions(ipa: &std::path::Path) -> Result<(PathBuf, Vec<String>), Report> {
     let target = std::env::temp_dir().join(format!(
         "{}_stripped",
         ipa.file_name().ok_or_else(|| report!("bad path"))?.to_string_lossy()

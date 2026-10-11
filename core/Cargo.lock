@@ -142,18 +142,23 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 name = "apparition-core"
 version = "0.1.0"
 dependencies = [
+ "apple-codesign-quick",
  "crc32fast",
  "idevice",
  "idevice-ffi",
  "isideload",
+ "isideload-p12-keystore",
  "plist",
+ "ring",
  "rootcause",
+ "rsa",
  "rustls",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "x509-cert 0.2.5",
  "zip",
 ]
 

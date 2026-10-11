@@ -21,6 +21,20 @@ char *apparition_session(void);
 char *apparition_logout(void);
 char *apparition_sign(const char *app_path, const char *udid, const char *device_name,
                   bool strip_extensions);
+// Offline signing with an imported certificate and profiles (core/src/identity.rs). data_dir is
+// the same directory apparition_login takes; udid may be NULL where noted.
+// {ok, identities: [...], profiles: [...]}; udid (nullable) fills each profile's includesDevice.
+char *apparition_signing_list(const char *data_dir, const char *udid);
+// Imports a .p12's certificate and key; the password is used to open it and not kept. {ok, identity}.
+char *apparition_identity_import(const char *data_dir, const char *p12_path, const char *password);
+char *apparition_identity_delete(const char *data_dir, const char *identity_id);
+// {ok, profile}; udid is nullable.
+char *apparition_profile_import(const char *data_dir, const char *path, const char *udid);
+char *apparition_profile_delete(const char *data_dir, const char *uuid);
+// Signs with identity_id and the best imported profile (profile_uuid, nullable, overrides it for
+// the main app). {ok, signedPath, bundleId, profile, profileName, expires, debuggable, strippedExtensions}.
+char *apparition_sign_offline(const char *data_dir, const char *app_path, const char *identity_id,
+                              const char *profile_uuid, const char *udid, bool strip_extensions);
 // Handles from idevice's tunnel_create_rppairing; borrowed, not freed.
 char *apparition_install(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                      const char *app_path);

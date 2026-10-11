@@ -23,6 +23,12 @@ tracing-subscriber = { version = "0.3", features = ["fmt"] }
 zip = { version = "8.3", default-features = false, features = ["deflate"] }
 plist = "1"
 crc32fast = "1"
+# Offline signing with an imported certificate (identity.rs), at the versions isideload uses.
+apple-codesign-quick = "0.1.0"
+p12-keystore = { version = "0.3.0-rc4", package = "isideload-p12-keystore" }
+rsa = "0.9.10"
+x509-cert = "0.2.5"
+ring = "0.17"
 
 # isideload depends on idevice from crates.io; use the same revision the FFI is built from,
 # so the binary carries one copy of it.

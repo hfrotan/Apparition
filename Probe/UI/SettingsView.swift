@@ -120,6 +120,15 @@ struct SettingsView: View {
                 }
             }
             NavigationLink {
+                SigningView(account: account, library: library, onSignIn: onSetup)
+            } label: {
+                LabeledContent {
+                    Text(library.signing.signerName(library.signing.defaultSigner))
+                } label: {
+                    Label("Signing", systemImage: "signature")
+                }
+            }
+            NavigationLink {
                 DeveloperSlotsView(account: account, library: library, onSignIn: onSetup)
             } label: {
                 Label("Certificates & App IDs", systemImage: "person.badge.key")

@@ -25,6 +25,10 @@ final class LibraryModel {
         var signedAt: String?
         var expiresAt: String?
         var lastError: String?
+        /// What signs it: `SigningStore.appleID`, an imported certificate's id, or nil for the default.
+        var signWith: String?
+        /// What signed the installed copy, for the card: "Apple ID" or the certificate's name.
+        var signedWith: String?
     }
 
     struct RefreshRun: Codable, Sendable {
@@ -53,6 +57,7 @@ final class LibraryModel {
 
     private let account: AccountModel
     private let probe: ProbeModel
+    let signing: SigningStore
 
     private static var stateURL: URL { AccountModel.dataDir.appendingPathComponent("library.json") }
 
@@ -62,9 +67,10 @@ final class LibraryModel {
         var refreshRuns: [RefreshRun]?
     }
 
-    init(account: AccountModel, probe: ProbeModel) {
+    init(account: AccountModel, probe: ProbeModel, signing: SigningStore) {
         self.account = account
         self.probe = probe
+        self.signing = signing
         if let data = try? Data(contentsOf: Self.stateURL),
            let stored = try? JSONDecoder().decode(Stored.self, from: data) {
             sources = stored.sources
@@ -207,6 +213,13 @@ final class LibraryModel {
         log.info("removed an app from the library")
     }
 
+    /// Chooses what signs an app from its next refresh on (nil: the default).
+    func setSigner(_ signer: String?, for id: String) {
+        guard let index = installed.firstIndex(where: { $0.id == id }) else { return }
+        installed[index].signWith = signer
+        save()
+    }
+
     /// The source's listing for an installed app (icon, newest version), if its source is still added.
     func sourceApp(for app: InstalledApp) -> Sources.App? {
         sources.first { $0.id == app.source }?.apps.first { $0.id == app.id }
@@ -220,11 +233,18 @@ final class LibraryModel {
             return fail(&record, "can't read this device's UDID (paired, and LocalDevVPN or the companion up?)")
         }
         let name = UserDefaults.standard.string(forKey: "pairedName") ?? "Apple Vision Pro"
-        guard await account.signInSilently() else {
-            return fail(&record, "not signed in (sign in, or turn on Remember password for unattended refreshes)")
-        }
         let path = AccountModel.appsDir.appendingPathComponent(record.ipaFile).path
-        let signed = await AccountModel.signFile(path, udid: udid, deviceName: name, stripExtensions: record.stripExtensions)
+        let signer = signing.signer(for: record)
+        let signed: [String: Any]
+        if signer == SigningStore.appleID {
+            guard await account.signInSilently() else {
+                return fail(&record, "not signed in (sign in, or turn on Remember password for unattended refreshes)")
+            }
+            signed = await AccountModel.signFile(path, udid: udid, deviceName: name, stripExtensions: record.stripExtensions)
+        } else {
+            // An imported certificate signs on its own: no sign-in, no anisette, no slots.
+            signed = await SigningStore.signFile(path, identityId: signer, udid: udid, stripExtensions: record.stripExtensions)
+        }
         guard signed["ok"] as? Bool == true, let signedPath = signed["signedPath"] as? String else {
             return fail(&record, "sign failed: \(signed["error"] as? String ?? "unknown")")
         }
@@ -238,6 +258,7 @@ final class LibraryModel {
         record.installedBundleId = main?.bundleId
         record.signedAt = DebugTime.iso(Date())
         record.expiresAt = main?.profileExpires
+        record.signedWith = signing.signerName(signer)
         record.lastError = nil
         return "ok, expires \(record.expiresAt ?? "?")"
     }

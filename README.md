@@ -49,6 +49,16 @@ reachable. Apps refreshed are reported as "Refreshed UTM; expires Oct 18"; when 
 is due it says when the next app expires; and when nothing could be refreshed the action
 fails with the reason (not signed in, companion unreachable), so the automation shows it.
 
+## Your own developer certificate
+
+With a paid developer account, Apparition can sign without an Apple ID (Settings > Signing):
+import an Apple Development or Distribution certificate as a .p12, plus development, ad hoc or
+enterprise profiles that list the headset. Apps then sign on the headset for as long as their
+profile lasts, usually a year, with no sign-in, anisette server or free-account slots. A wildcard
+profile keeps each app's own bundle ID, and development profiles keep Launch with JIT working.
+The .p12 password is only used to open the file; the decrypted key is kept in Apparition's
+container, like the free account's key.
+
 ## Anisette
 
 Signing in to Apple needs an anisette-v3 server. Apparition ships none: enter the URL of

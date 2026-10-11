@@ -30,7 +30,9 @@ struct SetupStatus {
     static func opensOnLibrary(model: ProbeModel, account: AccountModel) -> Bool {
         let status = SetupStatus(model: model, account: account,
                                  pairedUDID: UserDefaults.standard.string(forKey: "pairedUDID"))
-        return status.companion && status.paired && status.anisette && (status.account || account.lastAppleID != nil)
+        // An imported certificate signs without an Apple ID, so anisette and sign-in can wait.
+        let signer = SigningStore.signsWithOwnCertificate || (status.anisette && (status.account || account.lastAppleID != nil))
+        return status.companion && status.paired && signer
     }
 }
 

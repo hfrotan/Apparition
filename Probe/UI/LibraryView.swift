@@ -171,7 +171,7 @@ struct LibraryView: View {
                 ManageSlotsButton(account: account, library: library, onSignIn: onSetup)
             }
         } else if let signed = Date.iso(app.signedAt) {
-            Note(text: "Refreshed \(signed.relativeToNow)", kind: .success)
+            Note(text: "Refreshed \(signed.relativeToNow)" + (app.signedWith.map { " with \($0)" } ?? ""), kind: .success)
         }
     }
 
@@ -223,6 +223,18 @@ struct LibraryView: View {
                 Text(bundleId)
             }
             Text("From \(app.source)")
+            Divider()
+            Picker(selection: Binding(get: { app.signWith ?? "" },
+                                      set: { library.setSigner($0.isEmpty ? nil : $0, for: app.id) })) {
+                Text("Default (\(library.signing.signerName(library.signing.defaultSigner)))").tag("")
+                Text("Apple ID").tag(SigningStore.appleID)
+                ForEach(library.signing.identities) { identity in
+                    Text(identity.name).tag(identity.id)
+                }
+            } label: {
+                Label("Sign With", systemImage: "signature")
+            }
+            .pickerStyle(.menu)
             Divider()
             Button("Remove from Library", systemImage: "trash", role: .destructive) { pendingRemoval = app }
                 .disabled(library.busy)
