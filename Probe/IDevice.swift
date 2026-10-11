@@ -133,6 +133,13 @@ enum IDevice {
         }
     }
 
+    /// Pair-setup (or pair-verify) through the companion relay ("ip:port"), without a tunnel.
+    static func pairViaRelay(_ relay: String, port: UInt16, hostname: String, file: PairingFile,
+                             pin: PinCallback, context: UnsafeMutableRawPointer) throws {
+        let reply = AccountModel.call(apparition_pair_relay(relay, port, hostname, file.handle, pin, context))
+        guard reply["ok"] as? Bool == true else { throw ProbeError(reply["error"] as? String ?? "pairing failed") }
+    }
+
     /// Opens a tunnel, launches the app under the debugger and serves its JIT requests.
     static func launchJIT(target: Target, hostname: String, file: PairingFile,
                           pin: PinCallback, context: UnsafeMutableRawPointer,

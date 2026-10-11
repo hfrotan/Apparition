@@ -28,12 +28,18 @@ char *apparition_launch_jit(struct AdapterHandle *adapter, struct RsdHandshakeHa
                         const char *bundle_id, unsigned int wait_seconds);
 
 // Opens the RemotePairing tunnel at device_host:device_port, or, when relay ("ip:port") is
-// non-null, through a Apparition Companion that connects back to this device (device_host is
+// non-null, through an Apparition Companion that connects back to this device (device_host is
 // then ignored). Fills the same handles as idevice's tunnel_create_rppairing; free them with
 // adapter_free / rsd_handshake_free. Returns {ok} or {ok: false, error}.
 char *apparition_tunnel_create(const char *device_host, unsigned short device_port, const char *relay,
                            const char *hostname, struct RpPairingFileHandle *pairing_file,
                            const char *(*pin)(void *context), void *pin_context,
                            struct AdapterHandle **out_adapter, struct RsdHandshakeHandle **out_handshake);
+
+// Pair-setup (or pair-verify) with the RemotePairing service on `port` through the companion at
+// relay ("ip:port"), without a tunnel; updates pairing_file in place. Returns {ok} or {ok: false, error}.
+char *apparition_pair_relay(const char *relay, unsigned short port, const char *hostname,
+                            struct RpPairingFileHandle *pairing_file,
+                            const char *(*pin)(void *context), void *pin_context);
 
 #endif

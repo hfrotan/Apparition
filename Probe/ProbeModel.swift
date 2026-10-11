@@ -215,6 +215,14 @@ final class ProbeModel {
     }
 
     func pair(host: String, port: Int) async {
+        if host == Self.relayHost, let relay {
+            await run(action: "pair", host: host, port: port) { file, box in
+                try IDevice.pairViaRelay(relay, port: UInt16(port), hostname: Self.hostname, file: file,
+                                         pin: PinBox.callback, context: box)
+                return { _ in }
+            }
+            return
+        }
         await run(action: "pair", host: host, port: port) { file, box in
             let peer = try IDevice.pair(host: host, port: UInt16(port), hostname: Self.hostname, file: file,
                                         pin: PinBox.callback, context: box)
@@ -294,8 +302,16 @@ final class ProbeModel {
                 let file = try FileManager.default.fileExists(atPath: url.path)
                     ? IDevice.PairingFile.load(Data(contentsOf: url))
                     : IDevice.PairingFile.generate(hostname: Self.hostname)
-                let apply = try body(file, box)
-                // A pair-setup updates the file in place; persist it either way.
+                // A pair-setup updates the file in place, and a later step can still fail (a
+                // tunnel on the wrong port): persist it either way, or the new keys are lost
+                // while the device keeps the pairing.
+                let apply: @Sendable (inout Attempt) -> Void
+                do {
+                    apply = try body(file, box)
+                } catch {
+                    try? file.serialized().write(to: url, options: .completeFileProtection)
+                    throw error
+                }
                 try file.serialized().write(to: url, options: .completeFileProtection)
                 return apply
             }

@@ -128,7 +128,7 @@ final class CompanionFinder {
         let line = String(decoding: reply, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         guard line.hasPrefix("INFO "),
               let json = try JSONSerialization.jsonObject(with: Data(line.dropFirst(5).utf8)) as? [String: Any] else {
-            throw IDevice.ProbeError("not a Apparition Companion (or an old one): \(line.prefix(40))")
+            throw IDevice.ProbeError("not an Apparition Companion (or an old one): \(line.prefix(40))")
         }
         let anisette = (json["anisette"] as? Int).map { "http://\(address):\($0)" }
         return Companion(name: name, relay: "\(address):\(port)", anisetteURL: anisette)

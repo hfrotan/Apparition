@@ -1,4 +1,4 @@
-//! The RemotePairing tunnel, opened directly or through a Apparition Companion relay.
+//! The RemotePairing tunnel, opened directly or through an Apparition Companion relay.
 //!
 //! The device resets any connection it makes to its own RemotePairing service, so Apparition
 //! can't reach the headset it runs on directly. Two ways around that:
@@ -135,6 +135,49 @@ pub unsafe extern "C" fn apparition_tunnel_create(
             *out_adapter = Box::into_raw(Box::new(AdapterHandle(adapter)));
             *out_handshake = Box::into_raw(Box::new(RsdHandshakeHandle(handshake)));
         }
+        Ok(json!({}))
+    })())
+}
+
+/// Pair-setup (or pair-verify, when already paired) with the RemotePairing service at
+/// `port`, through the companion at `relay` ("ip:port"), with no tunnel. The device resets
+/// pair-setup attempts it makes to itself, so on the headset pairing goes through a relay
+/// like everything else. Updates `pairing_file` in place. Returns `{ok}`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_pair_relay(
+    relay: *const c_char,
+    port: u16,
+    hostname: *const c_char,
+    pairing_file: *mut RpPairingFileHandle,
+    pin: PinFn,
+    pin_context: *mut c_void,
+) -> *mut c_char {
+    struct Context(*mut c_void);
+    unsafe impl Send for Context {}
+    unsafe impl Sync for Context {}
+    let context = Context(pin_context);
+
+    reply((|| {
+        if pairing_file.is_null() {
+            bail!("missing argument");
+        }
+        let relay: SocketAddr = unsafe { text(relay) }?.parse()?;
+        let hostname = unsafe { text(hostname) }?;
+        let pairing = unsafe { &mut (*pairing_file).0 };
+        let ask_pin = || {
+            pin.and_then(|callback| {
+                let reply = callback(context.0);
+                (!reply.is_null()).then(|| unsafe { CStr::from_ptr(reply) }.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "000000".to_string())
+        };
+        runtime().block_on(async {
+            let device = SocketAddr::new("0.0.0.0".parse().unwrap(), port);
+            let control = dial(device, Some(relay)).await.context("RemotePairing connection")?;
+            let mut rpc = RemotePairingClient::new(RpPairingSocket::new(control), &hostname);
+            rpc.connect(pairing, async || ask_pin()).await?;
+            Ok::<_, Report>(())
+        })?;
         Ok(json!({}))
     })())
 }
