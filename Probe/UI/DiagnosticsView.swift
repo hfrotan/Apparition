@@ -1,6 +1,8 @@
 import SwiftUI
 
-struct ContentView: View {
+/// The developer probe that was the whole UI before the app had screens: every step by hand,
+/// Bonjour results, reachability, raw attempts and signing. Hidden behind Settings > Advanced.
+struct DiagnosticsView: View {
     let model: ProbeModel
     let account: AccountModel
     let library: LibraryModel
@@ -27,7 +29,7 @@ struct ContentView: View {
                         TextField("6-digit code", text: $pin)
                             .keyboardType(.numberPad)
                         HStack {
-                            Button("Submit") { model.submitPin(pin); pin = "" }
+                            Button("Submit") { model.submitPin(DigitCodeField.digits(in: pin, length: 6)); pin = "" }
                             Button("Cancel", role: .cancel) { model.cancelPin() }
                         }
                     }
@@ -76,7 +78,7 @@ struct ContentView: View {
                     ForEach(model.interfaces, id: \.self) { Text($0).font(.caption.monospaced()) }
                 }
             }
-            .navigationTitle("Apparition")
+            .navigationTitle("Diagnostics")
             .toolbar {
                 Button("Browse") { model.startBrowsing() }
             }

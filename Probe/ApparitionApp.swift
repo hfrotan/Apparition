@@ -28,10 +28,11 @@ struct ApparitionApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model, account: account, library: library, companions: companions)
+            RootView(model: model, account: account, library: library, companions: companions)
                 .debugApprovalPrompts()
                 .task { await library.scheduleRefreshIfNeeded() }
         }
+        .defaultSize(width: 1180, height: 820)
         #if os(visionOS)
         DebugApprovalWindow()
         #endif
