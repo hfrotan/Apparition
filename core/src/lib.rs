@@ -258,6 +258,13 @@ pub extern "C" fn apparition_session() -> *mut c_char {
     }))
 }
 
+/// Forgets the signed-in session (this process only; nothing is sent to Apple). Returns `{ok}`.
+#[unsafe(no_mangle)]
+pub extern "C" fn apparition_logout() -> *mut c_char {
+    *SESSION.lock().unwrap() = None;
+    reply(Ok(json!({})))
+}
+
 /// Registers the device on the team (tolerating "already registered"), then signs the
 /// app or IPA at `app_path` for it. Returns `{ok, signedPath, devices}`.
 #[unsafe(no_mangle)]

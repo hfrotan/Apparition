@@ -336,6 +336,19 @@ final class ProbeModel {
         return attempts[0].outcome ?? "unknown"
     }
 
+    // MARK: Setup helpers (read by the UI)
+
+    /// Port of the manual-pairing service this device advertises while Settings > General >
+    /// Remote Devices is open: what `pair(host: relayHost, port:)` connects to.
+    var selfManualPairingPort: Int? {
+        advertised.values.first { $0.type == Self.manualPairingType && $0.isSelf && ($0.port ?? 0) > 0 }?.port
+    }
+
+    /// The newest attempt of `action` ("pair", "identify", "jit", ...), finished or not.
+    func latestAttempt(_ action: String) -> Attempt? {
+        attempts.first { $0.action == action }
+    }
+
     // MARK: Helpers
 
     static func interfaceAddresses() -> [String] {

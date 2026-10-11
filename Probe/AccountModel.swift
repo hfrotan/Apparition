@@ -41,9 +41,18 @@ final class AccountModel {
     }
 
     struct TwoFactorRequest: Sendable {
+        /// A trusted phone number Apple can text the code to.
+        struct PhoneNumber: Sendable, Identifiable {
+            let id: Int
+            /// As Apple shows it, mostly masked ("+1 (•••) •••-••12").
+            let number: String
+        }
+
         let sms: Bool
         let unknown: Bool
         let lastError: String?
+        var numbers: [PhoneNumber] = []
+        var selectedNumberId: Int?
     }
 
     /// Keep the password in this device's Keychain so refreshes can sign in without anyone
@@ -109,9 +118,14 @@ final class AccountModel {
         twoFactorBox.onRequestJSON = { [weak self] json in
             let request = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any]
             Task { @MainActor in
+                let numbers = (request?["numbers"] as? [[String: Any]] ?? []).compactMap { entry in
+                    (entry["id"] as? Int).map { TwoFactorRequest.PhoneNumber(id: $0, number: entry["number"] as? String ?? "") }
+                }
                 self?.twoFactor = TwoFactorRequest(sms: request?["sms"] as? Bool ?? false,
                                                    unknown: request?["unknown"] as? Bool ?? false,
-                                                   lastError: request?["lastError"] as? String)
+                                                   lastError: request?["lastError"] as? String,
+                                                   numbers: numbers,
+                                                   selectedNumberId: request?["selectedNumberId"] as? Int)
             }
         }
         let reply = await Task.detached {
@@ -229,6 +243,23 @@ final class AccountModel {
                                      stripExtensions: Bool) async -> [String: Any] {
         await Task.detached { call(apparition_sign(path, udid, deviceName, stripExtensions)) }.value
     }
+
+    /// Forgets the session and, with it, the remembered password, so nothing signs in again
+    /// until the user does. Nothing is sent to Apple.
+    func signOut() {
+        guard !busy else { return }
+        _ = Self.call(apparition_logout())
+        email = nil
+        team = nil
+        teams = []
+        lastError = nil
+        Keychain.delete()
+        UserDefaults.standard.removeObject(forKey: "appleID")
+        log.info("signed out")
+    }
+
+    /// The Apple ID last signed in with (not a secret; the field starts from it).
+    var lastAppleID: String? { UserDefaults.standard.string(forKey: "appleID") }
 
     func refreshSession() {
         let reply = Self.call(apparition_session())
