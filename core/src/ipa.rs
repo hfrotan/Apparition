@@ -122,13 +122,18 @@ fn add_dir(
 
 /// Packs the signed app at `app_path` (reusing `source_ipa`'s unchanged entries when given),
 /// uploads the IPA to PublicStaging over the tunnel and installs it.
-/// Returns `{ok, elapsedMs, packMs, uploadMs, bytes, files, reused}`.
+/// Returns `{ok, elapsedMs, packMs, uploadMs, bytes, files, reused, queued}`.
+///
+/// With `detach_after_ms` > 0, stops waiting that long after asking for the install and
+/// returns `queued: true`. Installing over the calling app itself needs this: installd holds
+/// the update until the app closes, as it does for App Store updates, and applies it then.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apparition_install_ipa(
     adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
     handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
     app_path: *const c_char,
     source_ipa: *const c_char,
+    detach_after_ms: u64,
 ) -> *mut c_char {
     reply((|| {
         if adapter.is_null() || handshake.is_null() {
@@ -169,11 +174,23 @@ pub unsafe extern "C" fn apparition_install_ipa(
             let upload_ms = started.elapsed().as_millis() as u64 - pack_ms;
 
             let mut installer = InstallationProxyClient::connect_rsd(adapter, handshake).await?;
-            installer.install(staged, None).await.context("Install failed")?;
-            Ok::<_, Report>(upload_ms)
+            if detach_after_ms == 0 {
+                installer.install(staged, None).await.context("Install failed")?;
+                return Ok::<_, Report>((upload_ms, false));
+            }
+            match tokio::time::timeout(std::time::Duration::from_millis(detach_after_ms), installer.install(staged, None)).await {
+                Ok(done) => {
+                    done.context("Install failed")?;
+                    Ok((upload_ms, false))
+                }
+                Err(_) => {
+                    tracing::info!("install still waiting after {detach_after_ms} ms; leaving it queued");
+                    Ok((upload_ms, true))
+                }
+            }
         });
         let _ = std::fs::remove_file(&out);
-        let upload_ms = result?;
+        let (upload_ms, queued) = result?;
         Ok(json!({
             "elapsedMs": started.elapsed().as_millis() as u64,
             "packMs": pack_ms,
@@ -181,6 +198,7 @@ pub unsafe extern "C" fn apparition_install_ipa(
             "bytes": packed.bytes,
             "files": packed.files,
             "reused": packed.reused,
+            "queued": queued,
         }))
     })())
 }

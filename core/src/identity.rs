@@ -352,14 +352,80 @@ fn chain(certificate: &Certificate, profile: &ProvisioningProfile) -> Result<Vec
 /// The profile's entitlements made concrete for `bundle_id`: wildcard App IDs and keychain
 /// groups become the bundle's own, and any other wildcard (associated domains, iCloud
 /// containers a wildcard profile allows) is left out, since a signature can't claim it.
-fn entitlements_for(profile: &Profile, bundle_id: &str) -> Dictionary {
+/// The entitlements an app was last signed with, from its main executable's code signature.
+/// None for an unsigned app or one this can't read.
+fn signed_entitlements(bundle_dir: &Path) -> Option<Dictionary> {
+    let info: Dictionary = plist::from_file(bundle_dir.join("Info.plist")).ok()?;
+    let executable = std::fs::read(bundle_dir.join(info.get("CFBundleExecutable")?.as_string()?)).ok()?;
+    let xml = entitlements_xml(&executable)?;
+    plist::from_bytes(xml).ok()
+}
+
+/// The XML entitlements blob of a Mach-O's LC_CODE_SIGNATURE (the first slice of a fat binary).
+fn entitlements_xml(file: &[u8]) -> Option<&[u8]> {
+    let be = |at: usize| file.get(at..at + 4).map(|b| u32::from_be_bytes(b.try_into().unwrap()));
+    let le = |at: usize| file.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+    let base = match be(0)? {
+        0xcafe_babe => be(8 + 8)? as usize, // fat_arch[0].offset
+        _ => 0,
+    };
+    if le(base)? != 0xfeed_facf {
+        return None;
+    }
+    let commands = le(base + 16)? as usize;
+    let mut at = base + 32;
+    for _ in 0..commands {
+        let (command, size) = (le(at)?, le(at + 4)? as usize);
+        if command == 0x1d {
+            // LC_CODE_SIGNATURE: a superblob of big-endian (type, offset) entries.
+            let blob = base + le(at + 8)? as usize;
+            if be(blob)? != 0xfade_0cc0 {
+                return None;
+            }
+            for index in 0..be(blob + 8)? as usize {
+                let offset = blob + be(blob + 12 + index * 8 + 4)? as usize;
+                if be(offset)? == 0xfade_7171 {
+                    let length = be(offset + 4)? as usize;
+                    return file.get(offset + 8..offset + length);
+                }
+            }
+            return None;
+        }
+        at += size.max(8);
+    }
+    None
+}
+
+/// Whether the profile lets an app use this keychain group (`TEAM.*` covers `TEAM.<anything>`).
+fn keychain_group_allowed(profile_groups: &[Plist], group: &str) -> bool {
+    profile_groups.iter().filter_map(Plist::as_string).any(|allowed| match allowed.strip_suffix('*') {
+        Some(prefix) => group.starts_with(prefix),
+        None => group == allowed,
+    })
+}
+
+/// The entitlements to sign `bundle_id` with: the profile's, made concrete. `existing` is
+/// what the app was signed with before: its keychain groups are kept when the profile allows
+/// them, so a re-signed app (Apparition itself, or one first installed by Xcode or
+/// build-and-sign) still finds its Keychain items.
+fn entitlements_for(profile: &Profile, bundle_id: &str, existing: Option<&Dictionary>) -> Dictionary {
     let team = profile.team();
     let concrete = format!("{team}.{bundle_id}");
+    let kept_groups = existing
+        .and_then(|e| e.get("keychain-access-groups")?.as_array().cloned())
+        .filter(|groups| !groups.is_empty())
+        .filter(|groups| {
+            let allowed = profile.parsed.entitlements().get("keychain-access-groups").and_then(Plist::as_array);
+            allowed.is_some_and(|allowed| {
+                groups.iter().all(|g| g.as_string().is_some_and(|g| keychain_group_allowed(allowed, g)))
+            })
+        });
     let mut entitlements = Dictionary::new();
     for (key, value) in profile.parsed.entitlements() {
         let value = match (key.as_str(), value) {
             ("application-identifier", _) => Plist::String(concrete.clone()),
             ("com.apple.developer.team-identifier", _) => Plist::String(team.to_string()),
+            ("keychain-access-groups", _) if kept_groups.is_some() => Plist::Array(kept_groups.clone().unwrap()),
             ("keychain-access-groups", Plist::Array(groups)) => Plist::Array(
                 groups
                     .iter()
@@ -580,6 +646,8 @@ pub unsafe extern "C" fn apparition_sign_offline(
 
         let mut app = Application::new(app_path)?;
         let original = app.main_bundle_id()?;
+        // Read before anything is re-signed.
+        let previous = signed_entitlements(&app.bundle.bundle_dir);
 
         let main = match &chosen {
             Some(uuid) => usable
@@ -606,12 +674,12 @@ pub unsafe extern "C" fn apparition_sign_offline(
             .filter_map(|e| Some((e.bundle_dir.clone(), e.bundle_identifier()?.to_string())))
             .collect();
         extensions.extend(rename_extensionkit(&app.bundle.bundle_dir, &original, &main_id)?);
-        let mut by_bundle: Vec<(String, &Profile)> = Vec::new();
+        let mut by_bundle: Vec<(String, &Profile, Option<Dictionary>)> = Vec::new();
         let mut stripped = Vec::new();
         for (dir, id) in extensions {
             let profile = if main.covers(&id) { Some(main) } else { best_profile(&usable, &id).filter(|p| p.covers(&id)) };
             match profile {
-                Some(profile) => by_bundle.push((id, profile)),
+                Some(profile) => by_bundle.push((id, profile, signed_entitlements(&dir))),
                 None if strip_extensions => {
                     std::fs::remove_dir_all(&dir)?;
                     stripped.push(dir.file_name().unwrap_or_default().to_string_lossy().to_string());
@@ -625,11 +693,11 @@ pub unsafe extern "C" fn apparition_sign_offline(
         let certificate_chain = chain(&identity.certificate, &main.parsed)?;
         let signer = RustCryptoCmsSigner::new(identity.key.clone(), identity.certificate.clone(), certificate_chain);
         let mut settings =
-            BundleSigningSettings::new(main.team(), entitlements_for(main, &main_id), Some(&signer));
+            BundleSigningSettings::new(main.team(), entitlements_for(main, &main_id, previous.as_ref()), Some(&signer));
         settings.embedded_mobileprovision = Some(&main.data);
-        for (id, profile) in &by_bundle {
+        for (id, profile, previous) in &by_bundle {
             settings.embedded_mobileprovisions_by_bundle_id.insert(id.clone(), &profile.data);
-            settings.entitlements_by_bundle_id.insert(id.clone(), entitlements_for(profile, id));
+            settings.entitlements_by_bundle_id.insert(id.clone(), entitlements_for(profile, id, previous.as_ref()));
         }
         sign_bundle(&app.bundle.bundle_dir, &settings).context("Signing failed")?;
         tracing::info!("signed offline with profile {}", main.uuid());
@@ -709,6 +777,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keychain_groups() {
+        let allowed = vec![Plist::String("TEAM.*".into()), Plist::String("com.apple.token".into())];
+        assert!(keychain_group_allowed(&allowed, "TEAM.*"));
+        assert!(keychain_group_allowed(&allowed, "TEAM.com.example.app"));
+        assert!(keychain_group_allowed(&allowed, "com.apple.token"));
+        assert!(!keychain_group_allowed(&allowed, "OTHER.com.example.app"));
+    }
+
+    /// `APPARITION_SIGNED_APP=<a signed .app>`: reads its entitlements from the code signature.
+    #[test]
+    #[ignore]
+    fn reads_signed_entitlements() {
+        let app = PathBuf::from(std::env::var("APPARITION_SIGNED_APP").unwrap());
+        let entitlements = signed_entitlements(&app).expect("entitlements");
+        println!("{entitlements:?}");
+        assert!(entitlements.contains_key("application-identifier"));
+    }
+
+    #[test]
     fn wildcard_bundle_ids() {
         for (pattern, original, expected, covered) in [
             ("*", "com.utmapp.UTM", "com.utmapp.UTM", true),
@@ -747,7 +834,7 @@ mod local {
             let mut summary = profile.json(&[], None);
             summary.as_object_mut().unwrap().remove("uuid");
             println!("{summary} certs={} ent={:?}", profile.certificate_ids().len(),
-                     entitlements_for(&profile, "com.utmapp.UTM").keys().collect::<Vec<_>>());
+                     entitlements_for(&profile, "com.utmapp.UTM", None).keys().collect::<Vec<_>>());
         }
     }
 
@@ -787,6 +874,19 @@ mod local {
         println!("with extensions: {kept}");
         assert_eq!(kept["ok"], true);
         assert_eq!(kept["strippedExtensions"].as_array().unwrap().len(), 0);
+
+        // Keychain groups: UTM's own (another team's) can't be kept, so it gets its concrete
+        // group; an app already signed with the profile's wildcard keeps the wildcard.
+        let groups = |e: &Dictionary| format!("{:?}", e.get("keychain-access-groups"));
+        let after = signed_entitlements(Path::new(kept["signedPath"].as_str().unwrap())).unwrap();
+        assert!(groups(&after).contains("TEAM123456.com.utmapp.UTM"), "{}", groups(&after));
+        let profile = Profile::parse(std::fs::read(dir.join("fake.mobileprovision")).unwrap()).unwrap();
+        let mut wildcard = Dictionary::new();
+        wildcard.insert("keychain-access-groups".into(), Plist::Array(vec![Plist::String("TEAM123456.*".into())]));
+        assert!(groups(&entitlements_for(&profile, "com.utmapp.UTM", Some(&wildcard))).contains("TEAM123456.*"));
+        let mut foreign = Dictionary::new();
+        foreign.insert("keychain-access-groups".into(), Plist::Array(vec![Plist::String("OTHER.com.utmapp.UTM".into())]));
+        assert!(groups(&entitlements_for(&profile, "com.utmapp.UTM", Some(&foreign))).contains("TEAM123456.com.utmapp.UTM"));
 
         // A prefix wildcard renames the app, its ExtensionKit helper and the extension point.
         call(unsafe { apparition_profile_delete(data_c.as_ptr(), c("11111111-2222-3333-4444-555555555555").as_ptr()) });

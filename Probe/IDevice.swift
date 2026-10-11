@@ -154,10 +154,10 @@ enum IDevice {
     /// (apparition_install) when `asIPA` is off.
     static func install(target: Target, hostname: String, file: PairingFile,
                         pin: PinCallback, context: UnsafeMutableRawPointer, appPath: String,
-                        sourceIPA: String? = nil, asIPA: Bool = true) throws -> [String: Any] {
+                        sourceIPA: String? = nil, asIPA: Bool = true, detachAfterMs: UInt64 = 0) throws -> [String: Any] {
         try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
             guard asIPA else { return AccountModel.call(apparition_install(adapter, handshake, appPath)) }
-            return AccountModel.call(apparition_install_ipa(adapter, handshake, appPath, sourceIPA))
+            return AccountModel.call(apparition_install_ipa(adapter, handshake, appPath, sourceIPA, detachAfterMs))
         }
     }
 

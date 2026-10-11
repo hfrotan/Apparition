@@ -31,6 +31,25 @@ final class LibraryModel {
         var signedWith: String?
     }
 
+    /// Apparition's own refreshes: it re-signs and reinstalls itself (`refreshSelf`).
+    struct SelfRecord: Codable, Sendable {
+        var signedAt: String?
+        var signedWith: String?
+        var lastError: String?
+        /// Set when the update is handed to installd. installd holds an update of the running
+        /// app until it closes (as for App Store updates), so the next launch finishes the record.
+        var pending: PendingSelfRefresh?
+    }
+
+    struct PendingSelfRefresh: Codable, Sendable {
+        let startedAt: String
+        let runStartedAt: String?
+        let previousExpires: String?
+        /// `SelfApp.installStamp()` before installing: a different one at launch means the update took.
+        let previousStamp: String?
+        let signedWith: String
+    }
+
     struct RefreshRun: Codable, Sendable {
         let startedAt: String
         let trigger: String
@@ -54,6 +73,11 @@ final class LibraryModel {
     private(set) var busy = false
     private(set) var status: String?
     private(set) var refreshRuns: [RefreshRun] = []
+    private(set) var selfRecord = SelfRecord()
+    /// This copy of Apparition, read once: its profile only changes with a reinstall, which relaunches.
+    let selfApp = SelfApp.current()
+    /// The result key for Apparition itself in a refresh run.
+    nonisolated static let selfResultKey = "apparition"
 
     private let account: AccountModel
     private let probe: ProbeModel
@@ -65,6 +89,7 @@ final class LibraryModel {
         var sources: [Sources.Source]
         var installed: [InstalledApp]
         var refreshRuns: [RefreshRun]?
+        var selfRecord: SelfRecord?
     }
 
     init(account: AccountModel, probe: ProbeModel, signing: SigningStore) {
@@ -76,11 +101,14 @@ final class LibraryModel {
             sources = stored.sources
             installed = stored.installed
             refreshRuns = stored.refreshRuns ?? []
+            selfRecord = stored.selfRecord ?? SelfRecord()
         }
+        finishPendingSelfRefresh()
     }
 
     private func save() {
-        let stored = Stored(sources: sources, installed: installed, refreshRuns: Array(refreshRuns.prefix(20)))
+        let stored = Stored(sources: sources, installed: installed, refreshRuns: Array(refreshRuns.prefix(20)),
+                            selfRecord: selfRecord)
         guard let data = try? JSONEncoder().encode(stored) else { return }
         try? data.write(to: Self.stateURL, options: .atomic)
     }
@@ -148,7 +176,9 @@ final class LibraryModel {
         refreshRuns.insert(run, at: 0)
         save()
         let due = installed.filter { force || Self.isDue($0) }
-        if due.isEmpty {
+        // Apparition itself only when due, even with force: each update waits for the app to close.
+        let selfDue = selfIsDue
+        if due.isEmpty && !selfDue {
             run.results["-"] = "nothing due"
         } else if busy {
             run.results["-"] = "busy"
@@ -158,6 +188,11 @@ final class LibraryModel {
                 status = "refreshing \(record.name)"
                 run.results[record.id] = await signAndInstall(&record)
                 upsert(record)
+            }
+            if selfDue {
+                // Last: its update waits in installd until Apparition closes.
+                status = "refreshing Apparition"
+                run.results[Self.selfResultKey] = await signAndInstallSelf(runStartedAt: run.startedAt)
             }
             busy = false
             status = nil
@@ -225,12 +260,18 @@ final class LibraryModel {
         sources.first { $0.id == app.source }?.apps.first { $0.id == app.id }
     }
 
-    private func signAndInstall(_ record: inout InstalledApp) async -> String {
+    private static let noUDID = "can't read this device's UDID (paired, and LocalDevVPN or the companion up?)"
+
+    private func deviceUDID() async -> String? {
         if UserDefaults.standard.string(forKey: "pairedUDID") == nil {
             await probe.identify(host: probe.defaultTunnelHost, port: 49152)
         }
-        guard let udid = UserDefaults.standard.string(forKey: "pairedUDID") else {
-            return fail(&record, "can't read this device's UDID (paired, and LocalDevVPN or the companion up?)")
+        return UserDefaults.standard.string(forKey: "pairedUDID")
+    }
+
+    private func signAndInstall(_ record: inout InstalledApp) async -> String {
+        guard let udid = await deviceUDID() else {
+            return fail(&record, Self.noUDID)
         }
         let name = UserDefaults.standard.string(forKey: "pairedName") ?? "Apple Vision Pro"
         let path = AccountModel.appsDir.appendingPathComponent(record.ipaFile).path
@@ -261,6 +302,135 @@ final class LibraryModel {
         record.signedWith = signing.signerName(signer)
         record.lastError = nil
         return "ok, expires \(record.expiresAt ?? "?")"
+    }
+
+    // MARK: Apparition itself
+
+    /// What re-signs Apparition: the imported certificate its profile names, else the Apple ID.
+    /// Either way it keeps the installed bundle ID and team, or the refresh is refused.
+    var selfSigner: String {
+        signing.identities.first { !$0.expired && selfApp?.certificateIds.contains($0.id) == true }?.id ?? SigningStore.appleID
+    }
+
+    var selfIsDue: Bool {
+        guard let expires = selfApp?.expires else { return false }
+        return expires.timeIntervalSinceNow < Self.refreshMargin
+    }
+
+    /// Re-signs Apparition now, due or not; the update applies when the app next closes.
+    func refreshSelf() async {
+        var run = RefreshRun(startedAt: DebugTime.iso(Date()), trigger: "self")
+        refreshRuns.insert(run, at: 0)
+        save()
+        await exclusive("refresh Apparition") {
+            let outcome = await self.signAndInstallSelf(runStartedAt: run.startedAt)
+            run.results[Self.selfResultKey] = outcome
+            return outcome
+        }
+        run.finishedAt = DebugTime.iso(Date())
+        if let index = refreshRuns.firstIndex(where: { $0.startedAt == run.startedAt && $0.trigger == "self" }) {
+            if run.results.isEmpty { run.results["-"] = "busy" }
+            refreshRuns[index] = run
+        }
+        save()
+    }
+
+    /// Copies the installed bundle, signs it with `selfSigner` under the same bundle ID and
+    /// team, and installs it over the running copy, which keeps the app's data.
+    private func signAndInstallSelf(runStartedAt: String?) async -> String {
+        guard let me = selfApp, let team = me.teamId else {
+            return selfFail("this copy of Apparition has no provisioning profile to renew")
+        }
+        guard let udid = await deviceUDID() else { return selfFail(Self.noUDID) }
+        let name = UserDefaults.standard.string(forKey: "pairedName") ?? "Apple Vision Pro"
+        let signer = selfSigner
+        var signingId: String?
+        if signer == SigningStore.appleID {
+            guard await account.signInSilently() else {
+                return selfFail("not signed in (sign in, or turn on Remember password for unattended refreshes)")
+            }
+            guard account.team?.id == team else {
+                return selfFail("Apparition was installed by team \(team), but the Apple ID signs for team \(account.team?.id ?? "?"), so it would install as a second copy. Sign in with the Apple ID that installed it, or import the certificate that signed it.")
+            }
+            // isideload appends the team ID itself.
+            guard let base = me.appleIDBaseBundleId(team: team) else {
+                return selfFail("Apparition's bundle ID (\(me.bundleId)) doesn't end in its team ID, so the Apple ID would rename it. Import the certificate that signed it.")
+            }
+            signingId = base
+        }
+
+        let copy: URL
+        do {
+            copy = try SelfApp.copyBundle(bundleId: signingId)
+        } catch {
+            return selfFail("couldn't copy Apparition for signing: \(error)")
+        }
+        defer { try? FileManager.default.removeItem(at: copy.deletingLastPathComponent()) }
+        let signed: [String: Any] = if signer == SigningStore.appleID {
+            await AccountModel.signFile(copy.path, udid: udid, deviceName: name, stripExtensions: false)
+        } else {
+            await SigningStore.signFile(copy.path, identityId: signer, udid: udid, stripExtensions: false)
+        }
+        guard signed["ok"] as? Bool == true, let signedPath = signed["signedPath"] as? String else {
+            return selfFail("sign failed: \(signed["error"] as? String ?? "unknown")")
+        }
+        let main = AccountModel.inspect(URL(fileURLWithPath: signedPath), udid: udid).first
+        guard main?.bundleId == me.bundleId, main?.profileTeam == team else {
+            return selfFail("signing gave \(main?.bundleId ?? "?") (team \(main?.profileTeam ?? "?")), not \(me.bundleId) (team \(team)), which would install a second copy; not installed")
+        }
+
+        let signedWith = signing.signerName(signer)
+        selfRecord.pending = PendingSelfRefresh(startedAt: DebugTime.iso(Date()), runStartedAt: runStartedAt,
+                                                previousExpires: me.expires.map(DebugTime.iso),
+                                                previousStamp: SelfApp.installStamp(), signedWith: signedWith)
+        save()
+        log.info("installing over itself")
+        // installd waits for Apparition to close before applying the update, so don't wait for that.
+        let outcome = await probe.install(host: probe.defaultTunnelHost, port: 49152, appPath: signedPath,
+                                          detachAfterMs: 20_000)
+        if outcome == "queued" {
+            return "ok, waiting: close Apparition to apply the update (expires \(main?.profileExpires ?? "?"))"
+        }
+        selfRecord.pending = nil
+        guard outcome == "ok" else {
+            return selfFail("install failed (LocalDevVPN connected, or the companion running?): \(outcome)")
+        }
+        selfRecord.signedAt = DebugTime.iso(Date())
+        selfRecord.signedWith = signedWith
+        selfRecord.lastError = nil
+        save()
+        return "ok, expires \(main?.profileExpires ?? "?") (applies when Apparition next opens)"
+    }
+
+    private func selfFail(_ message: String) -> String {
+        selfRecord.lastError = message
+        save()
+        log.error("Apparition: \(message, privacy: .public)")
+        return "error: \(message)"
+    }
+
+    /// After a self-refresh ended the app: the profile now embedded says whether it took.
+    private func finishPendingSelfRefresh() {
+        guard let pending = selfRecord.pending else { return }
+        selfRecord.pending = nil
+        let outcome: String
+        let replaced = pending.previousStamp.map { $0 != SelfApp.installStamp() }
+            ?? Date.iso(pending.previousExpires).map { previous in selfApp?.expires.map { $0 > previous } ?? false } ?? false
+        if replaced, let expires = selfApp?.expires {
+            selfRecord.signedAt = pending.startedAt
+            selfRecord.signedWith = pending.signedWith
+            selfRecord.lastError = nil
+            outcome = "ok, expires \(DebugTime.iso(expires))"
+        } else {
+            selfRecord.lastError = "the reinstall didn't take: this is still the copy from before"
+            outcome = "error: \(selfRecord.lastError!)"
+        }
+        if let index = refreshRuns.firstIndex(where: { $0.startedAt == pending.runStartedAt }) {
+            refreshRuns[index].results[Self.selfResultKey] = outcome
+            refreshRuns[index].finishedAt = refreshRuns[index].finishedAt ?? pending.startedAt
+        }
+        save()
+        log.info("self-refresh finished after relaunch: \(outcome.hasPrefix("ok") ? "ok" : "failed", privacy: .public)")
     }
 
     private func fail(_ record: inout InstalledApp, _ message: String) -> String {

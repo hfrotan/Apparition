@@ -13,12 +13,28 @@ enum LibraryEndpoints {
         let refreshRuns: [LibraryModel.RefreshRun]
         let rememberPassword: Bool
         let hasStoredPassword: Bool
+        let apparition: SelfState?
+    }
+
+    struct SelfState: Encodable {
+        let bundleId: String
+        let teamId: String?
+        let profileName: String?
+        let expires: String?
+        let due: Bool
+        let signer: String
+        let record: LibraryModel.SelfRecord
     }
 
     static func state(_ model: LibraryModel, _ account: AccountModel) -> State {
         State(busy: model.busy, status: model.status, sources: model.sources, installed: model.installed,
               refreshRuns: Array(model.refreshRuns.prefix(5)), rememberPassword: account.rememberPassword,
-              hasStoredPassword: Keychain.hasPassword)
+              hasStoredPassword: Keychain.hasPassword,
+              apparition: model.selfApp.map { me in
+                  SelfState(bundleId: me.bundleId, teamId: me.teamId, profileName: me.profileName,
+                            expires: me.expires.map(DebugTime.iso), due: model.selfIsDue,
+                            signer: model.signing.signerName(model.selfSigner), record: model.selfRecord)
+              })
     }
 
     static func register(_ model: LibraryModel, account: AccountModel) {
@@ -62,6 +78,12 @@ enum LibraryEndpoints {
                      parameters: [.boolean("force", "Refresh every installed app", default: false)]) { args in
                 let force = args.bool("force") ?? false
                 Task { await model.refresh(force: force, trigger: "manual") }
+                try await Task.sleep(for: .seconds(1))
+                return state(model, account)
+            },
+            .command("refreshSelf", "Re-sign Apparition with selfSigner and hand the update to installd, which applies it when the app closes; relaunch and read libraryState.apparition",
+                     timeout: .seconds(5)) { _ in
+                Task { await model.refreshSelf() }
                 try await Task.sleep(for: .seconds(1))
                 return state(model, account)
             },

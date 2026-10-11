@@ -14,6 +14,7 @@ struct LibraryView: View {
     /// The app whose JIT launch this screen started, to show its progress on the right card.
     @State private var jitAppId: String?
     @State private var pendingRemoval: LibraryModel.InstalledApp?
+    @State private var confirmingSelfRefresh = false
     @MainActor private static var listedThisLaunch = false
 
     private static let columns = [GridItem(.adaptive(minimum: 420, maximum: 640), spacing: 20)]
@@ -33,16 +34,8 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    if library.installed.isEmpty && otherApps.isEmpty && model.deviceAppsFetchedAt == nil {
-                        emptyState
-                    } else {
-                        managedGroup
-                        otherGroup
-                            .padding(.top, 16)
-                    }
-                }
-                .padding(32)
+                content
+                    .padding(32)
             }
             .task {
                 // Once per launch: who else installed debuggable apps here. Refresh by hand after.
@@ -70,6 +63,25 @@ struct LibraryView: View {
             } message: { _ in
                 Text("Apparition stops refreshing it and deletes its kept copy. The app stays on this headset until its profile expires; delete it from the Home View to remove it now.")
             }
+            .confirmationDialog("Refresh Apparition now?", isPresented: $confirmingSelfRefresh, titleVisibility: .visible) {
+                Button("Refresh and Reinstall") { Task { await library.refreshSelf() } }
+            } message: {
+                Text("Apparition signs itself again with \(library.signing.signerName(library.selfSigner)) and hands the update to visionOS, keeping its data. The update applies when you close Apparition, like an App Store update.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if library.installed.isEmpty && otherApps.isEmpty && model.deviceAppsFetchedAt == nil {
+                if let me = library.selfApp { selfCard(me) }
+                emptyState
+            } else {
+                managedGroup
+                otherGroup
+                    .padding(.top, 16)
+            }
         }
     }
 
@@ -85,6 +97,9 @@ struct LibraryView: View {
     @ViewBuilder
     private var managedGroup: some View {
         groupHeader("Managed by Apparition", subtitle: "Signed and kept refreshed by Apparition.")
+        if let me = library.selfApp {
+            selfCard(me)
+        }
         if library.installed.isEmpty {
             HStack(spacing: 16) {
                 Text("No apps yet.").foregroundStyle(.secondary)
@@ -237,6 +252,62 @@ struct LibraryView: View {
             Button("Finish Setup", action: onSetup)
         }
         .frame(maxWidth: .infinity, minHeight: 420)
+    }
+
+    // MARK: Apparition's own card
+
+    /// Apparition itself: it refreshes last in each run once due, or here by hand.
+    private func selfCard(_ me: SelfApp) -> some View {
+        Card {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top, spacing: 16) {
+                    AppIconView(url: nil, name: "Apparition", size: 72)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            Text("Apparition")
+                                .font(.title3.weight(.semibold))
+                            StatusPill(text: "This app", systemImage: "sparkles", tint: .accentColor)
+                        }
+                        Text([me.teamName, me.teamId.map { "Team \($0)" }].compactMap { $0 }.joined(separator: " · "))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        TimelineView(.periodic(from: .now, by: 60)) { _ in
+                            selfExpiryPill(me)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                if library.selfRecord.pending != nil && !library.busy {
+                    Note(text: "The refreshed copy is ready. Close Apparition to apply it, then open it again.", kind: .info)
+                } else if let error = library.selfRecord.lastError {
+                    Note(text: error, kind: .error).lineLimit(4)
+                } else if let signed = Date.iso(library.selfRecord.signedAt) {
+                    Note(text: "Refreshed itself \(signed.relativeToNow)" + (library.selfRecord.signedWith.map { " with \($0)" } ?? ""), kind: .success)
+                }
+                Text("Refreshes itself with \(library.signing.signerName(library.selfSigner)) once due, after the other apps. The update applies the next time Apparition closes.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button {
+                    confirmingSelfRefresh = true
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .disabled(library.busy || model.busy)
+            }
+        }
+    }
+
+    private func selfExpiryPill(_ me: SelfApp) -> StatusPill {
+        guard let expires = me.expires else {
+            return StatusPill(text: "No expiry", systemImage: "clock.badge.questionmark", tint: .secondary)
+        }
+        let left = expires.timeIntervalSinceNow
+        if left <= 0 {
+            return StatusPill(text: "Expired \(expires.relativeToNow)", systemImage: "xmark.circle.fill", tint: .red)
+        }
+        return StatusPill(text: "Expires \(expires.relativeToNow)", systemImage: "clock",
+                          tint: left < LibraryModel.refreshMargin ? .orange : .green)
     }
 
     // MARK: App card

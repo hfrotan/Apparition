@@ -114,8 +114,10 @@ enum ShortcutActions {
         var errors: [String] = []
         for (id, result) in run.results.sorted(by: { $0.key < $1.key }) where id != "-" {
             let app = library.installed.first { $0.id == id }
-            let name = app?.name ?? id
-            if result.hasPrefix("ok") {
+            let name = id == LibraryModel.selfResultKey ? "Apparition" : app?.name ?? id
+            if id == LibraryModel.selfResultKey, result.hasPrefix("ok") {
+                done.append(result.contains("waiting") ? "Apparition (applies when it closes)" : "Apparition")
+            } else if result.hasPrefix("ok") {
                 done.append("\(name); expires \(shortDate(app?.expiresAt) ?? "?")")
             } else {
                 let message = result.hasPrefix("error: ") ? String(result.dropFirst(7)) : result
