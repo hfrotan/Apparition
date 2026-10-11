@@ -47,7 +47,8 @@ offers "Use its anisette server" next to the companion; nothing switches on its 
 
 ## Build
 
-    scripts/build-core.sh      # builds the Rust core (isideload + idevice) for iOS
+    scripts/build-core.sh      # builds the Rust core (isideload + idevice) for visionOS and iOS
+    scripts/build-core.sh visionos-sim   # adds the visionOS simulator (rustup target add aarch64-apple-visionos-sim)
     xcodegen                   # generates Apparition.xcodeproj from project.yml
     build-and-sign             # or open Apparition.xcodeproj and Run
     SCHEME_NAME=ApparitionLab TARGET_NAME=ApparitionLab BUILD_BUNDLE_ID=com.illixion.apparition.lab \
