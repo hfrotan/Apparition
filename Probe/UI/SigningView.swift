@@ -11,9 +11,6 @@ struct SigningView: View {
 
     @AppStorage("pairedUDID") private var pairedUDID: String?
     @State private var importing: ImportKind?
-    @State private var pickedCertificate: PickedFile?
-    @State private var sheetError: String?
-    @State private var password = ""
     @State private var working = false
     @State private var message: (text: String, kind: Note.Kind)?
     @State private var pendingIdentity: SigningStore.Identity?
@@ -52,9 +49,6 @@ struct SigningView: View {
             let kind = importing
             importing = nil
             handlePicked(result, kind: kind)
-        }
-        .sheet(item: $pickedCertificate) { picked in
-            passwordSheet(picked.url)
         }
         .confirmationDialog("Remove \(pendingIdentity?.name ?? "this certificate")?",
                             isPresented: Binding(get: { pendingIdentity != nil }, set: { if !$0 { pendingIdentity = nil } }),
@@ -202,7 +196,7 @@ struct SigningView: View {
                     expiryText(profile.expires)
                 }
                 if let problem = problem(profile, certificates: certificates) {
-                    Note(text: problem, kind: profile.expired || profile.kind == "appStore" ? .error : .warning)
+                    Note(text: problem, kind: profile.expired || profile.kind == "appStore" || profile.forVision == false ? .error : .warning)
                 } else {
                     Note(text: "Signs with \(certificates.map(\.name).formatted(.list(type: .or)))", kind: .success)
                 }
@@ -227,6 +221,9 @@ struct SigningView: View {
     private func problem(_ profile: SigningStore.Profile, certificates: [SigningStore.Identity]) -> String? {
         if profile.expired { return "Expired." }
         if profile.kind == "appStore" { return "An App Store profile can't install apps on a device. Use a development or ad hoc one." }
+        if profile.forVision == false {
+            return "Made for \(profile.platforms.joined(separator: ", ")), not visionOS. Make the profile for an iOS or visionOS App ID."
+        }
         if profile.includesDevice == false {
             return "Doesn't list this headset. Add its UDID to the profile's devices in your developer account, download the profile again and import it."
         }
@@ -259,7 +256,7 @@ struct SigningView: View {
             1. On developer.apple.com, register this headset under Devices with the UDID above.
             2. Make an Apple Development certificate (or use Xcode's), then on your Mac export it from Keychain Access (My Certificates, Export…) as a .p12 with a password.
             3. Make a development profile for an App ID (a wildcard covers every app) that includes the certificate and this headset, and download it.
-            4. Bring both here with AirDrop or the Files app, and import them above.
+            4. Bring both here: share or AirDrop them to Apparition, put them in Files > On My Apple Vision Pro > Apparition > Signing, or import them above.
             """)
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -270,95 +267,17 @@ struct SigningView: View {
 
     // MARK: Import
 
+    /// Picked files go the same way as shared ones: profiles import at once, a certificate
+    /// asks for its password in IncomingSigningSheet.
     private func handlePicked(_ result: Result<[URL], Error>, kind: ImportKind?) {
         switch result {
         case .failure(let error):
             message = ("\(error.localizedDescription)", .error)
         case .success(let urls):
-            switch kind {
-            case .certificate:
-                password = ""
-                sheetError = nil
-                pickedCertificate = urls.first.map(PickedFile.init)
-            case .profiles:
-                importProfiles(urls)
-            case nil:
-                break
+            message = nil
+            Task {
+                for url in urls { await signing.receive(url) }
             }
-        }
-    }
-
-    private func passwordSheet(_ url: URL) -> some View {
-        NavigationStack {
-            Form {
-                Section {
-                    SecureField("Password", text: $password)
-                        .textContentType(.password)
-                        .onSubmit { importCertificate(url) }
-                } header: {
-                    Text(url.lastPathComponent)
-                } footer: {
-                    Text("The password chosen when the certificate was exported. It opens the file once on this headset and isn't stored.")
-                }
-                if let sheetError {
-                    Section { Note(text: sheetError, kind: .error) }
-                }
-            }
-            .navigationTitle("Import Certificate")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { pickedCertificate = nil; password = "" }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Import") { importCertificate(url) }
-                        .disabled(working)
-                }
-            }
-        }
-        .frame(minWidth: 520, minHeight: 320)
-    }
-
-    private func importCertificate(_ url: URL) {
-        let typed = password
-        working = true
-        Task {
-            do {
-                let identity = try await signing.importCertificate(from: url, password: typed)
-                pickedCertificate = nil
-                password = ""
-                let usable = signing.usableProfiles(for: identity)
-                message = usable.isEmpty
-                    ? ("Imported \(identity.name). Import a profile for it next.", .success)
-                    : ("Imported \(identity.name), with \(Self.profiles(usable.count)) for this headset.", .success)
-                if signing.defaultSigner == SigningStore.appleID, account.team == nil, !usable.isEmpty {
-                    signing.defaultSigner = identity.id
-                }
-            } catch {
-                // The sheet stays open so a mistyped password can be fixed.
-                sheetError = "\(error)"
-            }
-            working = false
-        }
-    }
-
-    private func importProfiles(_ urls: [URL]) {
-        working = true
-        Task {
-            var imported: [SigningStore.Profile] = []
-            var errors: [String] = []
-            for url in urls {
-                do {
-                    imported.append(try await signing.importProfile(from: url))
-                } catch {
-                    errors.append("\(url.lastPathComponent): \(error)")
-                }
-            }
-            if errors.isEmpty {
-                message = (imported.count == 1 ? "Imported \(imported[0].name)." : "Imported \(imported.count) profiles.", .success)
-            } else {
-                message = (errors.joined(separator: "\n"), .error)
-            }
-            working = false
         }
     }
 
@@ -396,7 +315,3 @@ struct SigningView: View {
     }
 }
 
-private struct PickedFile: Identifiable {
-    let id = UUID()
-    let url: URL
-}

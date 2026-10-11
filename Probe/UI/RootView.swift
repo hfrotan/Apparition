@@ -38,6 +38,7 @@ struct RootView: View {
     /// Opens on the Library once setup is complete, on Setup on first run or while anything
     /// is missing (whether or not Setup was dismissed with Finish Later).
     @State private var tab: AppTab
+    @Environment(\.scenePhase) private var scenePhase
 
     init(model: ProbeModel, account: AccountModel, library: LibraryModel, companions: CompanionFinder) {
         self.model = model
@@ -82,6 +83,16 @@ struct RootView: View {
             if !shown && tab == .diagnostics { tab = .settings }
         }
         .onAppear { model.startBrowsing() }
+        // Certificates and profiles: put in Files > Apparition > Signing, or shared or opened here.
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .active { Task { await library.signing.scanInbox() } }
+        }
+        .onOpenURL { url in
+            Task { await library.signing.receive(url) }
+        }
+        .sheet(isPresented: Binding(get: { library.signing.hasIncoming }, set: { if !$0 { library.signing.dismissIncoming() } })) {
+            IncomingSigningSheet(signing: library.signing)
+        }
     }
 
     /// Long work (a refresh, a sign-in, a tunnel) shown past the tabs, so it's visible from any tab.

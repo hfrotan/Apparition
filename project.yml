@@ -40,6 +40,22 @@ targets:
         CFBundleVersion: "1"
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # Opening or sharing a certificate (.p12) or provisioning profile hands it to
+        # Apparition, which imports it (SigningStore.receive).
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Signing Certificate
+            LSItemContentTypes: [com.rsa.pkcs-12]
+            LSHandlerRank: Alternate
+          - CFBundleTypeName: Provisioning Profile
+            LSItemContentTypes: [com.apple.mobileprovision]
+            LSHandlerRank: Owner
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.apple.mobileprovision
+            UTTypeDescription: Provisioning Profile
+            UTTypeConformsTo: [public.data]
+            UTTypeTagSpecification:
+              public.filename-extension: [mobileprovision]
+              public.mime-type: [application/x-apple-aspen-mobileprovision]
         # The main window plus DebugTrace's approval window.
         UIApplicationSceneManifest:
           UIApplicationPreferredDefaultSceneSessionRole: UIWindowSceneSessionRoleApplication

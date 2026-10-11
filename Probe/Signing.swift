@@ -35,6 +35,8 @@ final class SigningStore {
         /// get-task-allow: apps signed with it can be launched with JIT.
         let debuggable: Bool
         let platforms: [String]
+        /// Lists visionOS (xrOS) among its platforms; a tvOS-only profile can't sign for the headset.
+        let forVision: Bool?
         let deviceCount: Int
         let includesDevice: Bool?
         let expires: String?
@@ -90,7 +92,8 @@ final class SigningStore {
     /// The imported profiles this certificate can sign with on this headset.
     func usableProfiles(for identity: Identity) -> [Profile] {
         profiles.filter {
-            $0.identityIds.contains(identity.id) && !$0.expired && $0.kind != "appStore" && $0.includesDevice == true
+            $0.identityIds.contains(identity.id) && !$0.expired && $0.kind != "appStore"
+                && $0.forVision != false && $0.includesDevice == true
         }
     }
 
@@ -144,6 +147,147 @@ final class SigningStore {
         load()
     }
 
+    // MARK: Files and sharing
+
+    /// A certificate waiting for its password, from the Files inbox, a share or the picker.
+    struct IncomingCertificate: Identifiable, Equatable {
+        let id = UUID()
+        let url: URL
+    }
+
+    /// What arrived and how it went, shown by IncomingSigningSheet until dismissed.
+    struct IncomingResult: Identifiable {
+        let id = UUID()
+        let file: String
+        let text: String
+        let ok: Bool
+        var identityId: String? = nil
+        var profileUUID: String? = nil
+    }
+
+    private(set) var pendingCertificates: [IncomingCertificate] = []
+    private(set) var incomingResults: [IncomingResult] = []
+
+    /// Documents/Signing, which Files shows as Apparition > Signing. Anything put there is
+    /// imported the next time Apparition is in front, and removed once imported.
+    nonisolated static var inboxDir: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Signing", isDirectory: true)
+    }
+
+    private enum Kind { case certificate, profile }
+
+    private static func kind(of url: URL) -> Kind? {
+        switch url.pathExtension.lowercased() {
+        case "p12", "pfx": .certificate
+        case "mobileprovision", "provisionprofile": .profile
+        default: nil
+        }
+    }
+
+    /// Imports what's in the Files inbox: profiles at once, certificates once their
+    /// password is typed.
+    func scanInbox() async {
+        try? FileManager.default.createDirectory(at: Self.inboxDir, withIntermediateDirectories: true)
+        let files = (try? FileManager.default.contentsOfDirectory(at: Self.inboxDir, includingPropertiesForKeys: nil)) ?? []
+        for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            await receive(file)
+        }
+    }
+
+    /// A file opened in or shared to Apparition, picked in Signing, or found in the inbox.
+    func receive(_ url: URL) async {
+        switch Self.kind(of: url) {
+        case .profile:
+            do {
+                let profile = try await importProfile(from: url)
+                removeIfOurs(url)
+                var text = "Imported \(profile.name) (\(profile.appIdPattern))"
+                if profile.forVision == false { text += ", but it isn't for visionOS" }
+                else if profile.includesDevice == false { text += ", but it doesn't list this headset" }
+                report(url, text, ok: true, profileUUID: profile.uuid)
+            } catch {
+                report(url, "\(error)", ok: false)
+            }
+        case .certificate:
+            if !pendingCertificates.contains(where: { $0.url.standardizedFileURL == url.standardizedFileURL }) {
+                pendingCertificates.append(IncomingCertificate(url: url))
+            }
+        case nil:
+            if !Self.isInbox(url) { report(url, "Not a certificate (.p12) or provisioning profile", ok: false) }
+        }
+    }
+
+    /// Imports a waiting certificate with its password. A wrong password throws and leaves it
+    /// waiting, so it can be typed again.
+    func importPending(_ incoming: IncomingCertificate, password: String) async throws {
+        let identity = try await importCertificate(from: incoming.url, password: password)
+        pendingCertificates.removeAll { $0.id == incoming.id }
+        removeIfOurs(incoming.url)
+        let usable = usableProfiles(for: identity).count
+        report(incoming.url, "Imported \(identity.name)" + (usable == 0 ? "" : ", with \(usable) profile\(usable == 1 ? "" : "s") for this headset"),
+               ok: true, identityId: identity.id)
+    }
+
+    /// Skips a waiting certificate. One in the inbox stays there until imported or deleted in Files.
+    func skipPending(_ incoming: IncomingCertificate) {
+        pendingCertificates.removeAll { $0.id == incoming.id }
+    }
+
+    func clearResults() {
+        incomingResults = []
+    }
+
+    /// The sheet was dismissed: skip what still waits for a password (an inbox file comes back
+    /// at the next scan) and forget the results.
+    func dismissIncoming() {
+        pendingCertificates = []
+        incomingResults = []
+    }
+
+    private func report(_ url: URL, _ text: String, ok: Bool, identityId: String? = nil, profileUUID: String? = nil) {
+        incomingResults.append(IncomingResult(file: url.lastPathComponent, text: text, ok: ok,
+                                              identityId: identityId, profileUUID: profileUUID))
+        if ok { log.info("incoming signing file imported") } else { log.error("incoming signing file failed: \(text, privacy: .private)") }
+    }
+
+    private static func isInbox(_ url: URL) -> Bool {
+        url.standardizedFileURL.path.hasPrefix(inboxDir.standardizedFileURL.path)
+    }
+
+    /// Removes a file once imported, if it's a copy in Apparition's own Documents (the inbox,
+    /// or Documents/Inbox, where a share lands). A file opened in place elsewhere is left alone.
+    private func removeIfOurs(_ url: URL) {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].standardizedFileURL.path
+        guard url.standardizedFileURL.path.hasPrefix(documents + "/") else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    /// What an imported half still lacks, for the import sheet: a certificate without a
+    /// profile for this headset, or a profile none of the certificates can sign with. Either
+    /// half may come first; nil once the set is complete (or the item was removed).
+    func missingHalf(of result: IncomingResult) -> String? {
+        if let id = result.identityId, let identity = identity(id) {
+            return usableProfiles(for: identity).isEmpty
+                ? "Waiting for a provisioning profile for this certificate that lists this headset. Share or open the .mobileprovision next."
+                : nil
+        }
+        if let uuid = result.profileUUID, let profile = profiles.first(where: { $0.uuid == uuid }) {
+            if profile.forVision == false || profile.includesDevice == false || profile.expired { return nil }  // already reported
+            return profile.identityIds.contains(where: { identity($0) != nil })
+                ? nil
+                : "Waiting for the certificate this profile was made for. Share or open its .p12 next."
+        }
+        return nil
+    }
+
+    /// Removes an imported half that's no longer wanted (an incomplete set, a wrong file).
+    func removeImported(_ result: IncomingResult) {
+        if let id = result.identityId, let identity = identity(id) { try? deleteIdentity(identity) }
+        if let uuid = result.profileUUID, let profile = profiles.first(where: { $0.uuid == uuid }) { try? deleteProfile(profile) }
+        incomingResults.removeAll { $0.id == result.id }
+    }
+
     // MARK: Signing
 
     /// Signs the IPA at `path` with an imported certificate; `{ok, signedPath, bundleId, ...}`.
@@ -193,7 +337,11 @@ enum SigningEndpoints {
                 store.defaultSigner = signer
                 return SigningSummary(defaultSigner: store.defaultSigner, identities: store.identities, profiles: store.profiles)
             },
-            .command("importProfile", "Import a .mobileprovision already in Apparition's Documents folder",
+.command("scanSigningInbox", "Import what's in Documents/Signing now (a .p12 then asks for its password on the headset)") { _ in
+                await store.scanInbox()
+                return SigningSummary(defaultSigner: store.defaultSigner, identities: store.identities, profiles: store.profiles)
+            },
+                        .command("importProfile", "Import a .mobileprovision already in Apparition's Documents folder",
                      parameters: [.string("file", "File name inside Documents", required: true)]) { args in
                 let name = try args.requireString("file")
                 guard !name.contains("/") else { throw SigningStore.Failure(description: "a file name, not a path") }

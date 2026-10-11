@@ -207,6 +207,12 @@ impl Profile {
             .unwrap_or_default()
     }
 
+    /// Whether apps signed with it may run on visionOS (a tvOS- or iOS-only profile can't).
+    fn for_vision(&self) -> bool {
+        let platforms = self.platforms();
+        platforms.is_empty() || platforms.iter().any(|p| matches!(*p, "xrOS" | "visionOS"))
+    }
+
     fn platforms(&self) -> Vec<&str> {
         self.plist()
             .get("Platform")
@@ -236,6 +242,7 @@ impl Profile {
             "kind": self.kind(),
             "debuggable": self.get_task_allow(),
             "platforms": self.platforms(),
+            "forVision": self.for_vision(),
             "deviceCount": self.devices().len(),
             "includesDevice": self.includes(udid),
             "expires": self.expires().map(iso),
@@ -563,7 +570,7 @@ pub unsafe extern "C" fn apparition_sign_offline(
         let usable: Vec<Profile> = Profile::all(&data_dir)
             .into_iter()
             .filter(|p| p.certificate_ids().contains(&identity.id))
-            .filter(|p| !p.expired() && p.kind() != "appStore" && p.includes(Some(&udid)) == Some(true))
+            .filter(|p| !p.expired() && p.kind() != "appStore" && p.for_vision() && p.includes(Some(&udid)) == Some(true))
             .collect();
         if usable.is_empty() {
             bail!(
