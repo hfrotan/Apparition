@@ -33,6 +33,8 @@ ring = "0.17"
 # isideload depends on idevice from crates.io; use the same revision the FFI is built from,
 # so the binary carries one copy of it.
 [patch.crates-io]
+# Signs ExtensionKit extensions (Extensions/) too; see vendor/apple-codesign-quick/VENDORED.md.
+apple-codesign-quick = { path = "vendor/apple-codesign-quick" }
 idevice = { git = "https://github.com/jkcoxson/idevice.git", rev = "3854a5df4a5a6dee71ffce4d8befc2ea356a8065" }
 
 [profile.release]

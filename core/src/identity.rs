@@ -32,7 +32,7 @@ use x509_cert::{
     name::Name,
 };
 
-use crate::{extract_without_extensions, reply, text};
+use crate::{reply, text};
 
 /// Intermediates a developer certificate may be issued by, besides the G3 that isideload
 /// bundles, and the root G6 chains to. Usually the .p12 holds only the leaf certificate.
@@ -558,7 +558,7 @@ pub unsafe extern "C" fn apparition_sign_offline(
 ) -> *mut c_char {
     reply((|| {
         let data_dir = PathBuf::from(unsafe { text(data_dir) }?);
-        let mut app_path = PathBuf::from(unsafe { text(app_path) }?);
+        let app_path = PathBuf::from(unsafe { text(app_path) }?);
         let identity = Identity::load(&data_dir, &unsafe { text(identity_id) }?)?;
         let chosen = unsafe { optional(profile_uuid) }?;
         let udid = unsafe { text(udid) }?;
@@ -578,10 +578,6 @@ pub unsafe extern "C" fn apparition_sign_offline(
             );
         }
 
-        let mut stripped = Vec::new();
-        if strip_extensions {
-            (app_path, stripped) = extract_without_extensions(&app_path)?;
-        }
         let mut app = Application::new(app_path)?;
         let original = app.main_bundle_id()?;
 
@@ -596,26 +592,34 @@ pub unsafe extern "C" fn apparition_sign_offline(
         if main_id != original {
             app.update_bundle_id(&original, &main_id)?;
         }
-
-        // Each extension needs a profile covering its (renamed) ID too.
-        let mut by_bundle: Vec<(String, &Profile)> = Vec::new();
-        for extension in app.bundle.app_extensions() {
-            let Some(id) = extension.bundle_identifier() else { continue };
-            let profile = if main.covers(id) {
-                main
-            } else {
-                best_profile(&usable, id).filter(|p| p.covers(id)).ok_or_else(|| {
-                    report!(
-                        "No imported profile covers the extension {id}. Import one for it, use a wildcard profile, or turn on removing extensions."
-                    )
-                })?
-            };
-            by_bundle.push((id.to_string(), profile));
-        }
-
         app.bundle.write_info()?;
         for extension in app.bundle.app_extensions_mut() {
             extension.write_info()?;
+        }
+
+        // Every extension, PlugIns/ and ExtensionKit's Extensions/, needs a profile covering its
+        // (renamed) ID. One no profile covers is removed when the app allows that, else it's an error.
+        let mut extensions: Vec<(PathBuf, String)> = app
+            .bundle
+            .app_extensions()
+            .iter()
+            .filter_map(|e| Some((e.bundle_dir.clone(), e.bundle_identifier()?.to_string())))
+            .collect();
+        extensions.extend(rename_extensionkit(&app.bundle.bundle_dir, &original, &main_id)?);
+        let mut by_bundle: Vec<(String, &Profile)> = Vec::new();
+        let mut stripped = Vec::new();
+        for (dir, id) in extensions {
+            let profile = if main.covers(&id) { Some(main) } else { best_profile(&usable, &id).filter(|p| p.covers(&id)) };
+            match profile {
+                Some(profile) => by_bundle.push((id, profile)),
+                None if strip_extensions => {
+                    std::fs::remove_dir_all(&dir)?;
+                    stripped.push(dir.file_name().unwrap_or_default().to_string_lossy().to_string());
+                }
+                None => bail!(
+                    "No imported profile covers the extension {id}. Import one for it, use a wildcard profile, or turn on removing extensions."
+                ),
+            }
         }
 
         let certificate_chain = chain(&identity.certificate, &main.parsed)?;
@@ -640,6 +644,47 @@ pub unsafe extern "C" fn apparition_sign_offline(
             "strippedExtensions": stripped,
         }))
     })())
+}
+
+/// ExtensionKit extensions (`Extensions/*.appex`) and the extension points the app declares
+/// for them (`Extensions/*.appexpt`). An app's own extension point is named after its bundle
+/// ID (UTM: `com.utmapp.UTM.qemu-helper`, which its code derives from the running app's ID),
+/// so a renamed app needs the point, the extension's ID and the extension's reference to the
+/// point renamed alike, or installd refuses the extension. Returns each extension's folder and
+/// (renamed) ID.
+fn rename_extensionkit(app: &Path, original: &str, renamed: &str) -> Result<Vec<(PathBuf, String)>, Report> {
+    let rename = |id: &str| match id.strip_prefix(original) {
+        Some(rest) if renamed != original && rest.starts_with('.') => format!("{renamed}{rest}"),
+        _ => id.to_string(),
+    };
+    let Ok(entries) = std::fs::read_dir(app.join("Extensions")) else { return Ok(Vec::new()) };
+    let mut extensions = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        match path.extension().and_then(|e| e.to_str()) {
+            Some("appex") => {
+                let info_path = path.join("Info.plist");
+                let Ok(mut info) = plist::from_file::<_, Dictionary>(&info_path) else { continue };
+                let Some(id) = info.get("CFBundleIdentifier").and_then(Plist::as_string).map(rename) else { continue };
+                info.insert("CFBundleIdentifier".into(), Plist::String(id.clone()));
+                if let Some(Plist::Dictionary(attributes)) = info.get_mut("EXAppExtensionAttributes") {
+                    if let Some(point) = attributes.get("EXExtensionPointIdentifier").and_then(Plist::as_string).map(rename) {
+                        attributes.insert("EXExtensionPointIdentifier".into(), Plist::String(point));
+                    }
+                }
+                plist::to_file_binary(&info_path, &info)?;
+                extensions.push((path, id));
+            }
+            Some("appexpt") if renamed != original => {
+                let Ok(points) = plist::from_file::<_, Dictionary>(&path) else { continue };
+                let points: Dictionary = points.into_iter().map(|(key, value)| (rename(&key), value)).collect();
+                plist::to_file_xml(&path, &points)?;
+            }
+            _ => {}
+        }
+    }
+    extensions.sort();
+    Ok(extensions)
 }
 
 /// The profile to sign `bundle_id` with: an explicit App ID equal to it, then the wildcard
@@ -741,5 +786,28 @@ mod local {
         let kept = call(unsafe { apparition_sign_offline(data_c.as_ptr(), c(dir.join("app.ipa").to_str().unwrap()).as_ptr(), c(&id).as_ptr(), std::ptr::null(), c("FAKE-UDID-0001").as_ptr(), false) });
         println!("with extensions: {kept}");
         assert_eq!(kept["ok"], true);
+        assert_eq!(kept["strippedExtensions"].as_array().unwrap().len(), 0);
+
+        // A prefix wildcard renames the app, its ExtensionKit helper and the extension point.
+        call(unsafe { apparition_profile_delete(data_c.as_ptr(), c("11111111-2222-3333-4444-555555555555").as_ptr()) });
+        call(unsafe { apparition_profile_import(data_c.as_ptr(), c(dir.join("fake-prefix.mobileprovision").to_str().unwrap()).as_ptr(), std::ptr::null()) });
+        let renamed = call(unsafe { apparition_sign_offline(data_c.as_ptr(), c(dir.join("app.ipa").to_str().unwrap()).as_ptr(), c(&id).as_ptr(), std::ptr::null(), c("FAKE-UDID-0001").as_ptr(), false) });
+        println!("renamed: {renamed}");
+        assert_eq!(renamed["ok"], true);
+        let app = PathBuf::from(renamed["signedPath"].as_str().unwrap());
+        let main = renamed["bundleId"].as_str().unwrap();
+        if let Ok(entries) = std::fs::read_dir(app.join("Extensions")) {
+            for entry in entries.filter_map(Result::ok) {
+                let path = entry.path();
+                let text = if path.extension().is_some_and(|e| e == "appex") {
+                    format!("{:?}", plist::from_file::<_, Dictionary>(path.join("Info.plist")).unwrap())
+                } else {
+                    std::fs::read_to_string(&path).unwrap_or_default()
+                };
+                println!("{}: {}", path.display(), text.len());
+                assert!(!text.contains("\"com.utmapp.UTM.") && !text.contains(">com.utmapp.UTM."), "{text}");
+                assert!(text.contains(main), "{text}");
+            }
+        }
     }
 }
