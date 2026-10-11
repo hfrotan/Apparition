@@ -18,7 +18,7 @@ final class CompanionFinder {
         let anisetteURL: String?
     }
 
-    nonisolated static let serviceType = "_apparition-companion._tcp"
+    nonisolated static let serviceType = "_apparition._tcp"
 
     private(set) var found: [Companion] = []
     private(set) var searching = false

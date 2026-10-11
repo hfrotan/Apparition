@@ -8,6 +8,7 @@ small command-line program with no dependencies beyond the OS.
     apparition-companion anisette up     # self-hosted anisette with your Docker (pinned image)
     apparition-companion anisette down   # stop it; its data volume stays
     apparition-companion anisette compose   # print the compose file it runs
+    apparition-companion --verbose | browse  # mDNS diagnostics
 
 Apparition finds it with "Find companion" on the same network, or set the relay to
 `<this machine>:49160` by hand (over Tailscale, use its Tailscale address).
@@ -29,9 +30,17 @@ The Windows build imports only system DLLs (UCRT, Winsock), so the .exe runs as 
 
 ## Tested
 
-2026-10-11: relayed Apparition's tunnel (pair-verify and the TLS-PSK tunnel) from the headset
-over Tailscale with the macOS build. The Windows x64 build answered INFO, refused bad
-and privileged-port requests, relayed bytes and reported connect-back failures (on an
-ARM64 Windows 11 VM, over loopback). Not yet tested: a Windows machine relaying for the
-headset on the LAN, and its mDNS advertisement being seen by Apparition (on macOS, Local
-Network privacy blocks an unbundled binary's multicast; use the menu-bar app there).
+2026-10-11:
+- The macOS build relayed Apparition's tunnel (pair-verify and the TLS-PSK tunnel) from the
+  headset over Tailscale.
+- The Windows x64 build, on a bridged Windows 11 VM on the LAN, was found by the
+  headset's "Find companion" over mDNS. It relayed the headset's tunnel; identify
+  succeeded through it.
+- On loopback it also answered INFO, refused bad and privileged-port requests, and
+  reported connect-back failures.
+
+On macOS, Local Network privacy blocks an unbundled binary's multicast, so it can't
+advertise there: use the menu-bar app.
+
+`apparition-companion --verbose` prints the mDNS daemon's events, and `apparition-companion
+browse` lists the companions mDNS sees from that machine.

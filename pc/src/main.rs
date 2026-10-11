@@ -25,7 +25,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 const RELAY_PORT: u16 = 49160;
 const ANISETTE_PORT: u16 = 6969;
-const SERVICE_TYPE: &str = "_apparition-companion._tcp.local.";
+const SERVICE_TYPE: &str = "_apparition._tcp.local.";
 const COMPOSE: &str = include_str!("../../selfhost/anisette/compose.yaml");
 
 #[tokio::main]
@@ -39,6 +39,11 @@ async fn main() -> ExitCode {
             Err(_) => usage(),
         },
         ["--no-mdns"] => relay(RELAY_PORT, false).await,
+        ["--verbose"] => {
+            unsafe { std::env::set_var("APPARITION_MDNS_VERBOSE", "1") };
+            relay(RELAY_PORT, true).await
+        }
+        ["browse"] => browse().await,
         ["anisette", action @ ("up" | "down")] => anisette(action).await,
         ["anisette", "compose"] => {
             print!("{COMPOSE}");
@@ -191,7 +196,18 @@ struct Mdns {
 impl Mdns {
     fn start(port: u16) -> Option<Self> {
         match mdns_sd::ServiceDaemon::new() {
-            Ok(daemon) => Some(Self { daemon, name: machine_name(), port }),
+            Ok(daemon) => {
+                if std::env::var_os("APPARITION_MDNS_VERBOSE").is_some() {
+                    if let Ok(events) = daemon.monitor() {
+                        std::thread::spawn(move || {
+                            while let Ok(event) = events.recv() {
+                                println!("mdns: {event:?}");
+                            }
+                        });
+                    }
+                }
+                Some(Self { daemon, name: machine_name(), port })
+            }
             Err(error) => {
                 eprintln!("mDNS unavailable, Apparition won't find this companion on its own: {error}");
                 None
@@ -231,6 +247,21 @@ fn machine_name() -> String {
         .map(|name| name.trim().to_string())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "apparition-companion".to_string())
+}
+
+/// Lists companions mDNS finds from here for 10 seconds: a check that multicast works.
+async fn browse() -> ExitCode {
+    let Ok(daemon) = mdns_sd::ServiceDaemon::new() else { return ExitCode::FAILURE };
+    let Ok(events) = daemon.browse(SERVICE_TYPE) else { return ExitCode::FAILURE };
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) {
+        match events.recv_timeout(left) {
+            Ok(mdns_sd::ServiceEvent::ServiceResolved(info)) => println!("found {} at {:?} port {}", info.get_fullname(), info.get_addresses(), info.get_port()),
+            Ok(event) => println!("{event:?}"),
+            Err(_) => break,
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// Runs the bundled compose file (selfhost/anisette/compose.yaml) with the user's Docker.

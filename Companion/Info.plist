@@ -22,7 +22,7 @@
 	<string>1</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_apparition-companion._tcp</string>
+		<string>_apparition._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Apparition Companion relays Apparition's connection back to your headset over the local network.</string>

@@ -31,24 +31,26 @@ final class Relay {
     }
 
     nonisolated static let port: UInt16 = 49160
-    nonisolated static let serviceType = "_apparition-companion._tcp"
+    nonisolated static let serviceType = "_apparition._tcp"
 
     private(set) var status = "stopped"
     private(set) var sessions: [Session] = []
     /// The port of an anisette server on this machine, when one answers.
     var anisettePort: UInt16? {
-        didSet { if anisettePort != oldValue { listener?.service = Self.service(anisettePort) } }
+        didSet { if anisettePort != oldValue, advertising { listener?.service = Self.service(anisettePort) } }
     }
 
     private var listener: NWListener?
+    /// Off once Bonjour refused the service, so the relay keeps listening without it.
+    private var advertising = true
     private let queue = DispatchQueue(label: "relay")
 
     func start() {
         do {
             let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: Self.port)!)
-            listener.service = Self.service(anisettePort)
+            if advertising { listener.service = Self.service(anisettePort) }
             listener.stateUpdateHandler = { [weak self] state in
-                Task { @MainActor in self?.status = Self.describe(state) }
+                Task { @MainActor in self?.update(state, of: listener) }
             }
             listener.newConnectionHandler = { [weak self] connection in
                 Task { @MainActor in self?.accept(connection) }
@@ -59,6 +61,21 @@ final class Relay {
             status = "can't listen on \(Self.port): \(error)"
             log.error("listen failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    private func update(_ state: NWListener.State, of listener: NWListener) {
+        guard listener === self.listener else { return }
+        // A Bonjour refusal fails the whole listener (macOS answers NoAuth when the service
+        // type isn't one the system has on record for this app). Apparition can still reach the
+        // relay by address, so listen again without advertising.
+        if case .failed(.dns(let code)) = state, advertising {
+            log.error("Bonjour refused the service (\(code, privacy: .public)); relaying without it")
+            advertising = false
+            listener.cancel()
+            start()
+            return
+        }
+        status = Self.describe(state) + (advertising ? "" : " (not advertised: Bonjour refused it)")
     }
 
     private static func service(_ anisettePort: UInt16?) -> NWListener.Service {

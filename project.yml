@@ -45,7 +45,7 @@ targets:
         NSBonjourServices:
           - _remotepairing._tcp
           - _remotepairing-manual-pairing._tcp
-          - _apparition-companion._tcp
+          - _apparition._tcp
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -100,7 +100,7 @@ targets:
         CFBundleVersion: "1"
         NSLocalNetworkUsageDescription: Apparition Companion relays Apparition's connection back to your headset over the local network.
         NSBonjourServices:
-          - _apparition-companion._tcp
+          - _apparition._tcp
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.illixion.apparition.companion
