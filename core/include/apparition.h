@@ -42,4 +42,11 @@ char *apparition_pair_relay(const char *relay, unsigned short port, const char *
                             struct RpPairingFileHandle *pairing_file,
                             const char *(*pin)(void *context), void *pin_context);
 
+// The account's development certificates and App IDs (core/src/account.rs). Revoking a
+// certificate stops apps signed with it from launching; ask the user first.
+char *apparition_list_certificates(void);
+char *apparition_revoke_certificate(const char *serial_number);
+char *apparition_list_app_ids(void);
+char *apparition_delete_app_id(const char *app_id_id);
+
 #endif

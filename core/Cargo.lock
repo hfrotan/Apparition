@@ -145,6 +145,7 @@ dependencies = [
  "idevice",
  "idevice-ffi",
  "isideload",
+ "plist",
  "rootcause",
  "rustls",
  "serde",

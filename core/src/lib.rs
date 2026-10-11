@@ -20,6 +20,7 @@ use isideload::{
 };
 use rootcause::prelude::*;
 
+mod account;
 mod tunnel;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -231,7 +232,7 @@ pub unsafe extern "C" fn apparition_login(
                 // Never revoke someone's existing certificates on our own: report instead.
                 .max_certs_behavior(MaxCertsBehavior::Error)
                 .storage(Box::new(FileStorage::open(storage_path)))
-                .machine_name("Apparition".to_string())
+                .machine_name(account::MACHINE_NAME.to_string())
                 .delete_app_after_install(false)
                 .build();
             let teams = isideload::dev::teams::TeamsApi::list_teams(sideloader.get_dev_session()).await?;
