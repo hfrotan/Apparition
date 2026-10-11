@@ -161,6 +161,14 @@ enum IDevice {
         }
     }
 
+    /// Opens a tunnel and lists every user app on the device (apparition_list_apps).
+    static func listApps(target: Target, hostname: String, file: PairingFile,
+                         pin: PinCallback, context: UnsafeMutableRawPointer) throws -> [String: Any] {
+        try withTunnel(target, hostname: hostname, file: file, pin: pin, context: context) { adapter, handshake in
+            AccountModel.call(apparition_list_apps(adapter, handshake))
+        }
+    }
+
     /// Opens a tunnel and reads the device's UDID and name from lockdown. Pair-verify doesn't
     /// return them (only pair-setup does), and signing needs the UDID.
     static func identify(target: Target, hostname: String, file: PairingFile,

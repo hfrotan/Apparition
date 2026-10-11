@@ -71,6 +71,31 @@ final class ProbeModel {
     private(set) var busy = false
     private(set) var pinRequested = false
     private(set) var hasPairingFile = false
+    /// Every user app on this headset at the last listApps, whoever installed it.
+    private(set) var deviceApps: [DeviceApp] = []
+    private(set) var deviceAppsFetchedAt: String?
+
+    struct DeviceApp: Codable, Sendable, Identifiable, Hashable {
+        var id: String { bundleId }
+        let bundleId: String
+        let name: String
+        let version: String?
+        /// Signed with get-task-allow, so it can be launched with JIT.
+        let debuggable: Bool
+        let teamId: String?
+        let signer: String?
+    }
+
+    private struct StoredApps: Codable {
+        let fetchedAt: String
+        let apps: [DeviceApp]
+    }
+
+    private static var deviceAppsURL: URL { AccountModel.dataDir.appendingPathComponent("device-apps.json") }
+
+    private final class AppsBox: @unchecked Sendable {
+        var apps: [DeviceApp]?
+    }
 
     private var browsers: [NWBrowser] = []
     private var resolvers: [String: ServiceResolver] = [:]
@@ -85,6 +110,7 @@ final class ProbeModel {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         IDevice.startLogging(to: documents.appendingPathComponent("idevice.log"))
         hasPairingFile = FileManager.default.fileExists(atPath: pairingFileURL.path)
+        loadDeviceApps()
         pinBox.onRequest = { [weak self] in
             Task { @MainActor in self?.pinRequested = true }
         }
@@ -274,6 +300,39 @@ final class ProbeModel {
             log.info("\(detail, privacy: .public)")
             return { attempt in attempt.detail = detail }
         }
+    }
+
+    /// Lists the headset's user apps through the tunnel and keeps the list (device-apps.json),
+    /// so the Library can show it before the next tunnel opens.
+    @discardableResult
+    func listApps(host: String, port: Int) async -> String {
+        let target = tunnelTarget(host: host, port: port)
+        let box = AppsBox()
+        let outcome = await run(action: "apps", host: host, port: port) { file, context in
+            let reply = try IDevice.listApps(target: target, hostname: Self.hostname, file: file,
+                                             pin: PinBox.callback, context: context)
+            guard reply["ok"] as? Bool == true, let apps = reply["apps"] else {
+                throw IDevice.ProbeError(reply["error"] as? String ?? "app lookup failed")
+            }
+            box.apps = try JSONDecoder().decode([DeviceApp].self, from: JSONSerialization.data(withJSONObject: apps))
+            let detail = "\(box.apps?.count ?? 0) apps, \(box.apps?.filter(\.debuggable).count ?? 0) debuggable"
+            return { attempt in attempt.detail = detail }
+        }
+        if let apps = box.apps {
+            deviceApps = apps
+            deviceAppsFetchedAt = DebugTime.iso(Date())
+            if let data = try? JSONEncoder().encode(StoredApps(fetchedAt: deviceAppsFetchedAt!, apps: apps)) {
+                try? data.write(to: Self.deviceAppsURL, options: .atomic)
+            }
+        }
+        return outcome
+    }
+
+    private func loadDeviceApps() {
+        guard let data = try? Data(contentsOf: Self.deviceAppsURL),
+              let stored = try? JSONDecoder().decode(StoredApps.self, from: data) else { return }
+        deviceApps = stored.apps
+        deviceAppsFetchedAt = stored.fetchedAt
     }
 
     func launchJIT(host: String, port: Int, bundleId: String, waitSeconds: Int) async {

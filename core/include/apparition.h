@@ -38,6 +38,9 @@ char *apparition_sign_offline(const char *data_dir, const char *app_path, const 
 // Handles from idevice's tunnel_create_rppairing; borrowed, not freed.
 char *apparition_install(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,
                      const char *app_path);
+// Every user app on the device, whoever installed it: {ok, apps: [{bundleId, name, version,
+// debuggable, teamId, signer}]}. debuggable apps (get-task-allow) can be launched with JIT.
+char *apparition_list_apps(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake);
 // Launches bundle_id suspended, attaches debugserver over the tunnel and serves the
 // brk #0x69 (UTM) and brk #0xf00d (JIT26) protocols, waiting up to wait_seconds.
 char *apparition_launch_jit(struct AdapterHandle *adapter, struct RsdHandshakeHandle *handshake,

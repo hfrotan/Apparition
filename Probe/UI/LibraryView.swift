@@ -14,6 +14,17 @@ struct LibraryView: View {
     /// The app whose JIT launch this screen started, to show its progress on the right card.
     @State private var jitAppId: String?
     @State private var pendingRemoval: LibraryModel.InstalledApp?
+    @MainActor private static var listedThisLaunch = false
+
+    private static let columns = [GridItem(.adaptive(minimum: 420, maximum: 640), spacing: 20)]
+
+    /// Debuggable apps on the headset that Apparition didn't install (or no longer manages).
+    private var otherApps: [ProbeModel.DeviceApp] {
+        let managed = Set(library.installed.compactMap(\.installedBundleId))
+        return model.deviceApps.filter {
+            $0.debuggable && $0.bundleId != Bundle.main.bundleIdentifier && !managed.contains($0.bundleId)
+        }
+    }
 
     private var apps: [LibraryModel.InstalledApp] {
         library.installed.sorted { (LibraryModel.expiryDate($0) ?? .distantPast) < (LibraryModel.expiryDate($1) ?? .distantPast) }
@@ -23,18 +34,21 @@ struct LibraryView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if library.installed.isEmpty {
+                    if library.installed.isEmpty && otherApps.isEmpty && model.deviceAppsFetchedAt == nil {
                         emptyState
                     } else {
-                        summary
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 420, maximum: 640), spacing: 20)], spacing: 20) {
-                            ForEach(apps) { app in
-                                card(app)
-                            }
-                        }
+                        managedGroup
+                        otherGroup
+                            .padding(.top, 16)
                     }
                 }
                 .padding(32)
+            }
+            .task {
+                // Once per launch: who else installed debuggable apps here. Refresh by hand after.
+                guard !Self.listedThisLaunch, model.hasPairingFile, !model.busy, !library.busy else { return }
+                Self.listedThisLaunch = true
+                await model.listApps(host: model.defaultTunnelHost, port: 49152)
             }
             .navigationTitle("Library")
             .toolbar {
@@ -59,6 +73,110 @@ struct LibraryView: View {
         }
     }
 
+    // MARK: Groups
+
+    private func groupHeader(_ title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.title.weight(.semibold))
+            Text(subtitle).font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var managedGroup: some View {
+        groupHeader("Managed by Apparition", subtitle: "Signed and kept refreshed by Apparition.")
+        if library.installed.isEmpty {
+            HStack(spacing: 16) {
+                Text("No apps yet.").foregroundStyle(.secondary)
+                Button("Browse Sources", action: onBrowse)
+                    .buttonStyle(.bordered)
+            }
+        } else {
+            summary
+            LazyVGrid(columns: Self.columns, spacing: 20) {
+                ForEach(apps) { app in
+                    card(app)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var otherGroup: some View {
+        HStack(alignment: .firstTextBaseline) {
+            groupHeader("Other Apps", subtitle: "Debuggable apps installed by Xcode, build-and-sign or another sideloader. Apparition can launch them with JIT, but doesn't sign or refresh them.")
+            Spacer()
+            if model.busy && model.latestAttempt("apps")?.outcome == nil && model.attempts.first?.action == "apps" {
+                ProgressView()
+            } else {
+                Button {
+                    Task { await model.listApps(host: model.defaultTunnelHost, port: 49152) }
+                } label: {
+                    Label("Check Again", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.busy || library.busy)
+            }
+        }
+        if let attempt = model.latestAttempt("apps"), let outcome = attempt.outcome, outcome.hasPrefix("error") {
+            Note(text: "Couldn't list this headset's apps: \(outcome.dropFirst(7))", kind: .warning)
+        }
+        if otherApps.isEmpty {
+            Text(model.deviceAppsFetchedAt == nil ? "Not checked yet." : "No other debuggable apps on this headset.")
+                .foregroundStyle(.secondary)
+        } else {
+            LazyVGrid(columns: Self.columns, spacing: 20) {
+                ForEach(otherApps) { app in
+                    otherCard(app)
+                }
+            }
+        }
+        let others = model.deviceApps.filter { !$0.debuggable }.count
+        if let fetched = Date.iso(model.deviceAppsFetchedAt) {
+            Text("Checked \(fetched.relativeToNow)" + (others > 0 ? ". \(others) more app\(others == 1 ? " isn't" : "s aren't") debuggable (App Store or distribution signed), so JIT can't attach to \(others == 1 ? "it" : "them")." : "."))
+                .font(.footnote)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func otherCard(_ app: ProbeModel.DeviceApp) -> some View {
+        let jitId = "device:\(app.bundleId)"
+        return Card {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top, spacing: 16) {
+                    AppIconView(url: nil, name: app.name, size: 72)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(app.name)
+                            .font(.title3.weight(.semibold))
+                            .lineLimit(1)
+                        if let version = app.version, !version.isEmpty {
+                            Text("Version \(version)").font(.callout).foregroundStyle(.secondary)
+                        }
+                        Text(app.bundleId)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                        if let signer = app.signer {
+                            Text(signer).font(.caption).foregroundStyle(.tertiary).lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                if jitAppId == jitId, let jit = jitNote() { jit }
+                Button {
+                    jitAppId = jitId
+                    log.info("JIT launch of another app from the library")
+                    Task { await model.launchJIT(host: model.defaultTunnelHost, port: 49152, bundleId: app.bundleId, waitSeconds: 600) }
+                } label: {
+                    Label("Launch with JIT", systemImage: "bolt.fill")
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.busy || library.busy)
+            }
+        }
+    }
+
     // MARK: Summary and progress
 
     @ViewBuilder
@@ -66,7 +184,7 @@ struct LibraryView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 12) {
                 Text("^[\(library.installed.count) app](inflect: true)")
-                    .font(.title2.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                 if let next = apps.compactMap(LibraryModel.expiryDate).first {
                     Text("·").foregroundStyle(.tertiary)
                     Text(next < Date() ? "one has expired" : "next expiry \(next.relativeToNow)")
@@ -176,7 +294,12 @@ struct LibraryView: View {
     }
 
     private func jitStatus(_ app: LibraryModel.InstalledApp) -> Note? {
-        guard jitAppId == app.id, let attempt = model.latestAttempt("jit") else { return nil }
+        guard jitAppId == app.id else { return nil }
+        return jitNote()
+    }
+
+    private func jitNote() -> Note? {
+        guard let attempt = model.latestAttempt("jit") else { return nil }
         switch attempt.outcome {
         case nil: return Note(text: "Launched under the debugger, serving JIT. Leave Apparition open until the app has started what needs JIT.", kind: .info)
         case "ok": return Note(text: "JIT session finished: \(attempt.detail ?? "ok")", kind: .success)

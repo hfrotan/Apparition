@@ -364,6 +364,50 @@ pub unsafe extern "C" fn apparition_install(
     })())
 }
 
+/// Every user app on the device, whoever installed it, from installation_proxy's Lookup over
+/// the tunnel: `{ok, apps: [{bundleId, name, version, debuggable, teamId, signer}]}`. An app is
+/// `debuggable` (so it can be launched with JIT) when its signature grants get-task-allow:
+/// development-signed apps (Xcode, build-and-sign, SideStore), not App Store ones.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apparition_list_apps(
+    adapter: *mut idevice_ffi::core_device_proxy::AdapterHandle,
+    handshake: *mut idevice_ffi::rsd::RsdHandshakeHandle,
+) -> *mut c_char {
+    reply((|| {
+        if adapter.is_null() || handshake.is_null() {
+            bail!("missing tunnel");
+        }
+        let adapter = unsafe { &mut (*adapter).0 };
+        let handshake = unsafe { &mut (*handshake).0 };
+        runtime().block_on(async {
+            use idevice::RsdService;
+            let mut installer = idevice::installation_proxy::InstallationProxyClient::connect_rsd(adapter, handshake)
+                .await
+                .context("installation_proxy connect failed")?;
+            let apps = installer.get_apps(Some("User"), None).await.context("app lookup failed")?;
+            let string = |info: &plist::Dictionary, key: &str| info.get(key).and_then(plist::Value::as_string).map(str::to_string);
+            let mut list: Vec<Value> = apps
+                .into_iter()
+                .filter_map(|(bundle_id, info)| {
+                    let info = info.into_dictionary()?;
+                    let entitlements = info.get("Entitlements").and_then(plist::Value::as_dictionary);
+                    let entitlement = |key: &str| entitlements.and_then(|e| e.get(key));
+                    Some(json!({
+                        "bundleId": bundle_id,
+                        "name": string(&info, "CFBundleDisplayName").or_else(|| string(&info, "CFBundleName")).unwrap_or_else(|| bundle_id.clone()),
+                        "version": string(&info, "CFBundleShortVersionString"),
+                        "debuggable": entitlement("get-task-allow").and_then(plist::Value::as_boolean).unwrap_or(false),
+                        "teamId": entitlement("com.apple.developer.team-identifier").and_then(plist::Value::as_string),
+                        "signer": string(&info, "SignerIdentity"),
+                    }))
+                })
+                .collect();
+            list.sort_by_key(|app| app["name"].as_str().unwrap_or_default().to_lowercase());
+            Ok(json!({ "apps": list }))
+        })
+    })())
+}
+
 // MARK: JIT launch
 
 const PAGE: u64 = 16 * 1024;

@@ -90,7 +90,12 @@ enum ProbeEndpoints {
                 try await Task.sleep(for: .seconds(2))
                 return state(model)
             },
-            .command("setRelay", "Set the Apparition Companion relay (ip:port), or clear it with an empty string",
+.command("listApps", "List every user app on the headset through the default tunnel (relay or LocalDevVPN), whoever installed it, and keep the list for the Library",
+                     timeout: .seconds(90)) { _ in
+                let outcome = await model.listApps(host: model.defaultTunnelHost, port: 49152)
+                return DeviceAppsReply(outcome: outcome, fetchedAt: model.deviceAppsFetchedAt, apps: model.deviceApps)
+            },
+                        .command("setRelay", "Set the Apparition Companion relay (ip:port), or clear it with an empty string",
                      parameters: [.string("relay", "e.g. 172.20.48.198:49160", required: true)]) { args in
                 let relay = try args.requireString("relay").trimmingCharacters(in: .whitespaces)
                 model.relay = relay.isEmpty ? nil : relay
@@ -108,4 +113,10 @@ enum ProbeEndpoints {
             },
         ])
     }
+}
+
+struct DeviceAppsReply: Encodable {
+    let outcome: String
+    let fetchedAt: String?
+    let apps: [ProbeModel.DeviceApp]
 }
