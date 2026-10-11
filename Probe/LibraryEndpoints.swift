@@ -65,6 +65,18 @@ enum LibraryEndpoints {
                 try await Task.sleep(for: .seconds(1))
                 return state(model, account)
             },
+            .query("backgroundTasks", "Background refresh requests the system still holds") { _ in
+                await model.pendingBackgroundTasks()
+            },
+            .command("scheduleBackgroundRefresh", "Test hook: ask for both background runs after `minutes`; with force, the next one refreshes everything",
+                     parameters: [
+                        .integer("minutes", "Earliest start, from now", default: 15),
+                        .boolean("force", "Refresh every app on the next background run, due or not", default: true),
+                     ]) { args in
+                UserDefaults.standard.set(args.bool("force") ?? true, forKey: LibraryModel.forceNextBackgroundKey)
+                model.scheduleRefresh(after: TimeInterval((args.int("minutes") ?? 15) * 60))
+                return await model.pendingBackgroundTasks()
+            },
         ])
     }
 }

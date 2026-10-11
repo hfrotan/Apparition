@@ -32,9 +32,16 @@ final class LibraryModel {
         let trigger: String
         var finishedAt: String?
         var results: [String: String] = [:]
+        /// When the system ended a background run's time before it finished.
+        var expiredAt: String?
     }
 
+    /// Short runs (about 30 s), offered often.
     nonisolated static let refreshTaskId = "com.illixion.apparition.refresh"
+    /// Longer runs (minutes), typically while idle. A refresh that uploads a large app needs these.
+    nonisolated static let processingTaskId = "com.illixion.apparition.refresh-processing"
+    /// Test hook: the next background run refreshes everything, due or not.
+    nonisolated static let forceNextBackgroundKey = "forceNextBackgroundRefresh"
     /// Free-account profiles last 7 days; refresh once fewer than this many are left.
     nonisolated static let refreshMargin: TimeInterval = 3 * 24 * 3600
 
@@ -132,6 +139,8 @@ final class LibraryModel {
     @discardableResult
     func refresh(force: Bool, trigger: String) async -> RefreshRun {
         var run = RefreshRun(startedAt: DebugTime.iso(Date()), trigger: trigger)
+        refreshRuns.insert(run, at: 0)
+        save()
         let due = installed.filter { force || Self.isDue($0) }
         if due.isEmpty {
             run.results["-"] = "nothing due"
@@ -148,7 +157,12 @@ final class LibraryModel {
             status = nil
         }
         run.finishedAt = DebugTime.iso(Date())
-        refreshRuns.insert(run, at: 0)
+        if let index = refreshRuns.firstIndex(where: { $0.startedAt == run.startedAt && $0.trigger == trigger }) {
+            run.expiredAt = refreshRuns[index].expiredAt
+            refreshRuns[index] = run
+        } else {
+            refreshRuns.insert(run, at: 0)
+        }
         save()
         scheduleRefresh()
         log.info("refresh (\(trigger, privacy: .public)): \(run.results.count, privacy: .public) results")
@@ -242,15 +256,68 @@ final class LibraryModel {
 
     // MARK: Background refresh
 
-    /// Asks for a background run about every 12 hours. It only succeeds when LocalDevVPN is
-    /// connected and the password is remembered; otherwise the run records why.
-    func scheduleRefresh() {
-        let request = BGAppRefreshTaskRequest(identifier: Self.refreshTaskId)
-        request.earliestBeginDate = Date(timeIntervalSinceNow: 12 * 3600)
-        do {
-            try BGTaskScheduler.shared.submit(request)
-        } catch {
-            log.error("refresh not scheduled: \(String(describing: error), privacy: .public)")
+    /// Registers both background tasks. Must run before the app finishes launching.
+    func registerBackgroundTasks() {
+        for id in [Self.refreshTaskId, Self.processingTaskId] {
+            BGTaskScheduler.shared.register(forTaskWithIdentifier: id, using: nil) { [weak self] task in
+                Task { @MainActor in self?.runBackground(task) }
+            }
+        }
+    }
+
+    private func runBackground(_ task: BGTask) {
+        let trigger = task.identifier == Self.processingTaskId ? "background-processing" : "background"
+        let force = UserDefaults.standard.bool(forKey: Self.forceNextBackgroundKey)
+        UserDefaults.standard.set(false, forKey: Self.forceNextBackgroundKey)
+        let work = Task { await refresh(force: force, trigger: trigger) }
+        task.expirationHandler = { [weak self] in
+            Task { @MainActor in self?.noteExpired(trigger: trigger) }
+            work.cancel()
+        }
+        Task {
+            let run = await work.value
+            task.setTaskCompleted(success: run.expiredAt == nil && !run.results.values.contains { $0.hasPrefix("error") })
+        }
+    }
+
+    private func noteExpired(trigger: String) {
+        guard let index = refreshRuns.firstIndex(where: { $0.trigger == trigger && $0.finishedAt == nil })
+            ?? refreshRuns.firstIndex(where: { $0.trigger == trigger }) else { return }
+        refreshRuns[index].expiredAt = DebugTime.iso(Date())
+        save()
+        log.error("\(trigger, privacy: .public) run expired")
+    }
+
+    /// Asks for background runs: a short one about every 12 hours and a longer one when the
+    /// system has time. They only succeed when the tunnel can open (the companion or
+    /// LocalDevVPN) and the password is remembered; otherwise the run records why.
+    func scheduleRefresh(after delay: TimeInterval = 12 * 3600) {
+        let refresh = BGAppRefreshTaskRequest(identifier: Self.refreshTaskId)
+        refresh.earliestBeginDate = Date(timeIntervalSinceNow: delay)
+        let processing = BGProcessingTaskRequest(identifier: Self.processingTaskId)
+        processing.earliestBeginDate = Date(timeIntervalSinceNow: delay)
+        processing.requiresNetworkConnectivity = true
+        for request in [refresh, processing] as [BGTaskRequest] {
+            do {
+                try BGTaskScheduler.shared.submit(request)
+            } catch {
+                log.error("\(request.identifier, privacy: .public) not scheduled: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
+    /// At launch: ask for runs only when none is pending, so a nearer request (from a run
+    /// that already rescheduled, or the test hook) isn't pushed back 12 hours.
+    func scheduleRefreshIfNeeded() async {
+        let pending = await BGTaskScheduler.shared.pendingTaskRequests().map(\.identifier)
+        if !pending.contains(Self.refreshTaskId) || !pending.contains(Self.processingTaskId) {
+            scheduleRefresh()
+        }
+    }
+
+    func pendingBackgroundTasks() async -> [[String: String]] {
+        await BGTaskScheduler.shared.pendingTaskRequests().map { request in
+            ["id": request.identifier, "earliest": request.earliestBeginDate.map(DebugTime.iso) ?? "-"]
         }
     }
 }

@@ -4,6 +4,7 @@ struct ContentView: View {
     let model: ProbeModel
     let account: AccountModel
     let library: LibraryModel
+    let companions: CompanionFinder
     @State private var sourceURL = "github:utmapp/UTM"
     @State private var pin = ""
     @State private var email = ""
@@ -92,6 +93,29 @@ struct ContentView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .font(.caption.monospaced())
+            HStack {
+                Button(companions.searching ? "Searching…" : "Find companion") { Task { await companions.search() } }
+                    .disabled(companions.searching)
+                if let relay = model.relay {
+                    Button("Check \(relay)") { Task { await companions.check(relay: relay) } }
+                }
+            }
+            ForEach(companions.found) { companion in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(companion.name) at \(companion.relay)").font(.caption)
+                    HStack {
+                        if model.relay != companion.relay {
+                            Button("Use as relay") { model.relay = companion.relay }
+                        }
+                        // The user's own server, used only when they choose it here.
+                        if let anisette = companion.anisetteURL, account.anisetteURL != anisette {
+                            Button("Use its anisette server") { account.anisetteURL = anisette }
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            if let error = companions.lastError { Text(error).font(.caption).foregroundStyle(.secondary) }
             ForEach(library.installed) { app in
                 VStack(alignment: .leading) {
                     Text("\(app.name) \(app.version)")

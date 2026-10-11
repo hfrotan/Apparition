@@ -37,12 +37,15 @@ targets:
         LSSupportsOpeningDocumentsInPlace: true
         UIBackgroundModes:
           - fetch
+          - processing
         BGTaskSchedulerPermittedIdentifiers:
           - com.illixion.apparition.refresh
+          - com.illixion.apparition.refresh-processing
         NSLocalNetworkUsageDescription: Apparition pairs with this device's own developer services over the local network.
         NSBonjourServices:
           - _remotepairing._tcp
           - _remotepairing-manual-pairing._tcp
+          - _apparition-companion._tcp
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -84,6 +87,8 @@ targets:
       - path: Companion
         excludes:
           - Info.plist
+      - path: selfhost/anisette/compose.yaml
+        buildPhase: resources
     dependencies:
       - package: DebugTrace
         product: DebugTrace

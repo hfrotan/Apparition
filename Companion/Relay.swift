@@ -14,6 +14,10 @@ private let log = DebugLogger(subsystem: "com.illixion.apparition.companion", ca
 /// The companion only ever connects back to the address a request came from, so it can't be
 /// used to reach anything else, and everything it carries is end-to-end encrypted between
 /// Apparition and the headset (pair-verify, then TLS-PSK). It holds no keys and no Apple ID.
+///
+/// `APPARITION-INFO 1\n` instead gets one line back, `INFO {json}\n`, saying what else this
+/// companion offers (for now an anisette server's port), so Apparition can offer to use it.
+/// The Bonjour TXT record carries the same, for discovery on the LAN.
 @MainActor @Observable
 final class Relay {
     struct Session: Identifiable {
@@ -31,6 +35,10 @@ final class Relay {
 
     private(set) var status = "stopped"
     private(set) var sessions: [Session] = []
+    /// The port of an anisette server on this machine, when one answers.
+    var anisettePort: UInt16? {
+        didSet { if anisettePort != oldValue { listener?.service = Self.service(anisettePort) } }
+    }
 
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "relay")
@@ -38,7 +46,7 @@ final class Relay {
     func start() {
         do {
             let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: Self.port)!)
-            listener.service = NWListener.Service(type: Self.serviceType)
+            listener.service = Self.service(anisettePort)
             listener.stateUpdateHandler = { [weak self] state in
                 Task { @MainActor in self?.status = Self.describe(state) }
             }
@@ -51,6 +59,13 @@ final class Relay {
             status = "can't listen on \(Self.port): \(error)"
             log.error("listen failed: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    private static func service(_ anisettePort: UInt16?) -> NWListener.Service {
+        var txt = NWTXTRecord()
+        txt["v"] = "1"
+        if let anisettePort { txt["anisette"] = String(anisettePort) }
+        return NWListener.Service(name: Host.current().localizedName, type: serviceType, txtRecord: txt)
     }
 
     private static func describe(_ state: NWListener.State) -> String {
@@ -94,6 +109,13 @@ final class Relay {
     }
 
     private func connect(_ client: NWConnection, back host: NWEndpoint.Host, request: String?) {
+        if request == "APPARITION-INFO 1" {
+            var info: [String: Any] = ["version": 1]
+            if let anisettePort { info["anisette"] = Int(anisettePort) }
+            let json = (try? JSONSerialization.data(withJSONObject: info)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+            client.send(content: Data("INFO \(json)\n".utf8), completion: .contentProcessed { _ in client.cancel() })
+            return
+        }
         let parts = request?.split(separator: " ") ?? []
         guard parts.count == 3, parts[0] == "APPARITION-RELAY", parts[1] == "1",
               let port = UInt16(parts[2]), port >= 1024 else {

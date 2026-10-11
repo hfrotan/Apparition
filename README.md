@@ -12,8 +12,10 @@ or `github:owner/repo` for apps published only as release assets (UTM's visionOS
 Installed apps keep their IPA in Documents/apps, so a refresh re-signs and reinstalls
 without the network, and their data survives. With "Remember password" on, the password
 stays in this device's Keychain, and a refresh can sign in with nobody present (Apple
-skips 2FA for a device it already trusts). A background app-refresh task runs this about
-every 12 hours. It needs LocalDevVPN connected, and its firing is not verified yet.
+skips 2FA for a device it already trusts). Background tasks ask to run this about every
+12 hours: a short app-refresh task, and a processing task for refreshes that outlast its
+~30 s (uploading UTM takes 40 to 150 s). They need the companion or LocalDevVPN, and their
+firing is not verified yet (`scheduleBackgroundRefresh` is the test hook).
 
 `Companion/` is Apparition Companion, an optional macOS menu-bar app. It replaces
 LocalDevVPN: the headset resets connections it makes to its own RemotePairing service,
@@ -22,7 +24,8 @@ the connection coming from the Mac. The companion only ever connects back to the
 that asked, and it carries only ciphertext (pair-verify, then TLS-PSK) with no keys. With
 the headset on Tailscale, which LocalDevVPN no longer occupies, a companion at home keeps
 signing and JIT working from anywhere. Tested 2026-10-11 with LocalDevVPN off: tunnel,
-refresh (109 s over the LAN, 150 s over Tailscale) and JIT launch.
+refresh (109 s over the LAN, 150 s over Tailscale) and JIT launch. On the LAN, Apparition
+finds the companion over Bonjour ("Find companion"); over Tailscale, type its address.
 
 `Lab/` is a test app for JIT experiments, launched through the probe's `launchJIT`.
 Its first experiment (2026-10-11, visionOS 27.2): bytes the debugger writes into the
@@ -37,6 +40,10 @@ any v3 server, or self-host one with `docker compose -f selfhost/anisette/compos
 up -d` (Dadoum's anisette-v3-server, pulled from its own registry and pinned by
 digest), and enter `http://<host>:6969`. The server sees this device's anisette identity
 and IP address, never the Apple ID or password, which go straight to Apple.
+
+The companion can run the same compose file with your Docker (Docker Desktop, OrbStack
+or Colima): Start in its window or menu. It then advertises the server, and Apparition
+offers "Use its anisette server" next to the companion; nothing switches on its own.
 
 ## Build
 

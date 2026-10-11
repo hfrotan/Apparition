@@ -8,6 +8,7 @@ struct ApparitionApp: App {
     @State private var model: ProbeModel
     @State private var account: AccountModel
     @State private var library: LibraryModel
+    @State private var companions = CompanionFinder()
 
     init() {
         DebugTrace.configure(.init(subsystems: [Bundle.main.bundleIdentifier ?? "Apparition"]))
@@ -21,17 +22,15 @@ struct ApparitionApp: App {
         let library = LibraryModel(account: account, probe: model)
         _library = State(initialValue: library)
         LibraryEndpoints.register(library, account: account)
+        library.registerBackgroundTasks()
+        CompanionEndpoints.register(_companions.wrappedValue, probe: model)
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model, account: account, library: library)
+            ContentView(model: model, account: account, library: library, companions: companions)
                 .debugApprovalPrompts()
-                // Not in init: submitting before SwiftUI registers the handler below throws.
-                .task { library.scheduleRefresh() }
-        }
-        .backgroundTask(.appRefresh(LibraryModel.refreshTaskId)) {
-            await library.refresh(force: false, trigger: "background")
+                .task { await library.scheduleRefreshIfNeeded() }
         }
         #if os(visionOS)
         DebugApprovalWindow()
