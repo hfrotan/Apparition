@@ -136,10 +136,10 @@ impl Application {
         None
     }
 
-    /// The developer-portal platform this app is built for. Apple keeps a separate device list and
-    /// team provisioning profiles per platform: a tvOS app needs the `tvos/` endpoints, or a team
-    /// whose only device is an Apple TV gets "Your team has no devices" (developer error 8220).
-    /// Everything else uses the default (`ios/`).
+    /// The developer-portal platform this app is built for. A tvOS app's team provisioning profile
+    /// must be requested with the tvOS platform (see `download_team_provisioning_profile`), or a
+    /// team whose only device is an Apple TV gets "Your team has no devices" (developer error 8220).
+    /// Everything else uses the default (iOS).
     pub fn developer_device_type(&self) -> Option<crate::dev::device_type::DeveloperDeviceType> {
         let info = &self.bundle.app_info;
         let tvos = info.get("DTPlatformName").and_then(|v| v.as_string()) == Some("appletvos")

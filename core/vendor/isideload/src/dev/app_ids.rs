@@ -157,10 +157,17 @@ pub trait AppIdsApi {
         app_id: &AppId,
         device_type: impl Into<Option<DeveloperDeviceType>> + Send,
     ) -> Result<Profile, Report> {
-        let body = plist!(dict {
+        let device_type = device_type.into();
+        let mut body = plist!(dict {
             "teamId": &team.team_id,
             "appIdId": &app_id.app_id_id,
         });
+        // Without these the portal builds an iOS profile, and a team whose only device is an
+        // Apple TV gets "Your team has no devices" (8220). With them it returns a tvOS profile.
+        if matches!(device_type, Some(DeveloperDeviceType::Tvos)) {
+            body.insert("DTDK_Platform".to_string(), Value::String("tvos".to_string()));
+            body.insert("subPlatform".to_string(), Value::String("tvOS".to_string()));
+        }
 
         let response: Profile = self
             .developer_session()

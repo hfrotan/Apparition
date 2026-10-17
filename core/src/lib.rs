@@ -265,7 +265,7 @@ pub async fn sign_with_apple_id(
         (app_path, stripped) = extract_without_extensions(&app_path)?;
     }
     let team = session.team.clone();
-    // An Apple TV must be registered in the team's tvOS device list (see developer_device_type).
+    // For an Apple TV, the team profile is requested with the tvOS platform (see developer_device_type).
     let device_type = app_device_type(&app_path);
     let dev = session.sideloader.get_dev_session();
     dev.ensure_device_registered(&team, device_name, udid, device_type.clone())

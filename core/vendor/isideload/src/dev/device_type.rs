@@ -11,7 +11,9 @@ impl DeveloperDeviceType {
         match self {
             DeveloperDeviceType::Any => "",
             DeveloperDeviceType::Ios => "ios/",
-            DeveloperDeviceType::Tvos => "tvos/",
+            // No tvos/ path exists on this API (it answers 404): Apple TV requests use ios/ and say
+            // the platform in the body where it matters (downloadTeamProvisioningProfile).
+            DeveloperDeviceType::Tvos => "ios/",
             DeveloperDeviceType::Watchos => "watchos/",
         }
     }
