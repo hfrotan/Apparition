@@ -101,6 +101,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
 
         let mut app = Application::new(app_path)?;
         let special = app.get_special_app();
+        let device_type = app.developer_device_type(); // tvOS apps use the tvos/ profile endpoints
 
         let main_bundle_id = app.main_bundle_id()?;
         let main_app_name = app.main_app_name()?;
@@ -174,7 +175,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
 
         let main_provisioning_profile = self
             .dev_session
-            .download_team_provisioning_profile(&team, &main_app_id, None)
+            .download_team_provisioning_profile(&team, &main_app_id, device_type.clone())
             .await?;
 
         let mut provisioning_profiles: Vec<(String, Profile, Dictionary)> = Vec::new();
@@ -187,7 +188,7 @@ impl<C: MaxCertsCallback> Sideloader<C> {
 
             let profile = self
                 .dev_session
-                .download_team_provisioning_profile(&team, &id, None)
+                .download_team_provisioning_profile(&team, &id, device_type.clone())
                 .await
                 .context(format!(
                     "Failed to download provisioning profile for {}",

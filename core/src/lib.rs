@@ -94,7 +94,7 @@ pub async fn sign_with_existing_profile(
         .iter()
         .find(|id| id.identifier == profile_app_id)
         .ok_or_else(|| report!("The team has no App ID {profile_app_id}"))?;
-    let profile = dev.download_team_provisioning_profile(&team, app_id, None).await?;
+    let profile = dev.download_team_provisioning_profile(&team, app_id, app_device_type(&app_path)).await?;
     identity::sign_keeping_bundle_id(
         identity.certificate,
         identity.private_key,
@@ -242,6 +242,14 @@ pub async fn sign_in(
     Ok((Session { email: email.to_string(), team, data_dir: data_dir.to_path_buf(), sideloader }, result))
 }
 
+/// The developer-portal platform of the app or IPA at `path` (tvOS needs Apple's tvos/ device list
+/// and profiles); None, the iOS default, when it can't be read.
+fn app_device_type(path: &std::path::Path) -> Option<isideload::dev::device_type::DeveloperDeviceType> {
+    isideload::sideload::application::Application::new(path.to_path_buf())
+        .ok()
+        .and_then(|app| app.developer_device_type())
+}
+
 /// Registers the device on the session's team (tolerating "already registered"), then signs
 /// the app or IPA at `app_path` for it. Returns `{signedPath, devices, strippedExtensions}`.
 pub async fn sign_with_apple_id(
@@ -257,11 +265,13 @@ pub async fn sign_with_apple_id(
         (app_path, stripped) = extract_without_extensions(&app_path)?;
     }
     let team = session.team.clone();
+    // An Apple TV must be registered in the team's tvOS device list (see developer_device_type).
+    let device_type = app_device_type(&app_path);
     let dev = session.sideloader.get_dev_session();
-    dev.ensure_device_registered(&team, device_name, udid, None)
+    dev.ensure_device_registered(&team, device_name, udid, device_type.clone())
         .await
         .context("Device registration failed")?;
-    let devices = dev.list_devices(&team, None).await?;
+    let devices = dev.list_devices(&team, device_type).await?;
     let registered: Vec<Value> = devices
         .iter()
         .map(|d| json!({"name": d.name, "udid": d.device_number, "status": d.status}))

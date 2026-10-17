@@ -1,0 +1,113 @@
+# Builds the tvOS-device-type fix (see the branch's commits) on GitHub-hosted runners:
+#   - Apparition for tvOS (unsigned IPA), on macOS with the newest Xcode the image has
+#   - the Windows installer (desktop app + CLI) cross-compiled on Linux, with WebView2Loader.dll
+#     included (the 0.1.1 zip lacks it, so the desktop app can't start)
+# Run it from Actions > "tvOS fix build" > Run workflow. Files land as workflow artifacts.
+
+name: tvOS fix build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [tvos-device-type]
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.97.1"
+
+jobs:
+  tvos-app:
+    name: Apparition for tvOS
+    runs-on: macos-26
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: Apparition, fetch-depth: 0 }
+      - uses: actions/checkout@v7
+        with: { repository: illixion/DebugTrace, path: DebugTrace }
+      - uses: actions/checkout@v7
+        with: { repository: illixion/RAVESDK, path: RAVESDK }
+      - name: Choose Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          xcode="$(ls -d /Applications/Xcode_2*.app | grep -v -i beta | sort -V | tail -1)"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          xcodebuild -showsdks | grep -i appletvos
+      - name: Tools
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target aarch64-apple-tvos
+          rustup default "$RUST_TOOLCHAIN"
+          brew install xcodegen
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: Apparition/core, key: tvos, cache-on-failure: true }
+      - name: Build
+        working-directory: Apparition
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^ *MARKETING_VERSION: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' project.yml | head -1)"
+          BUILD="$(git rev-list --count HEAD)"
+          xcodegen generate --quiet
+          scripts/build-core.sh tvos
+          xcodebuild -project Apparition.xcodeproj -scheme Apparition -configuration Release \
+            -sdk appletvos -destination "generic/platform=tvOS" -derivedDataPath "$RUNNER_TEMP/dd" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) APPARITION_RELEASE' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            -quiet build
+          app="$RUNNER_TEMP/dd/Build/Products/Release-appletvos/Apparition.app"
+          [[ -d "$app" ]] || { echo "no Apparition.app at $app"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/ipa/Payload" out
+          ditto "$app" "$RUNNER_TEMP/ipa/Payload/Apparition.app"
+          (cd "$RUNNER_TEMP/ipa" && zip -qryX "$GITHUB_WORKSPACE/Apparition/out/Apparition-$VERSION-tvosfix-tvOS.ipa" Payload)
+          ls -l out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: apparition-tvos-app
+          path: Apparition/out/*.ipa
+          if-no-files-found: error
+
+  windows:
+    name: Windows installer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: Apparition }
+      - name: Tools
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mingw-w64 zip >/dev/null
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target x86_64-pc-windows-gnu
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            Apparition/installer
+            Apparition/desktop
+          key: windows
+          cache-on-failure: true
+      - name: Build
+        working-directory: Apparition
+        run: |
+          set -euo pipefail
+          (cd installer && cargo build --release --target x86_64-pc-windows-gnu --bin apparition)
+          (cd desktop && cargo build --release --features custom-protocol --target x86_64-pc-windows-gnu)
+          out="$RUNNER_TEMP/win" && mkdir -p "$out"
+          cp installer/target/x86_64-pc-windows-gnu/release/apparition.exe "$out/apparition-cli.exe"
+          cp desktop/target/x86_64-pc-windows-gnu/release/apparition-app.exe "$out/Apparition.exe"
+          # WebView2Loader.dll from Microsoft's official NuGet package (the desktop app needs it beside it)
+          curl -sSL -o "$RUNNER_TEMP/wv2.zip" https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2
+          unzip -p "$RUNNER_TEMP/wv2.zip" build/native/x64/WebView2Loader.dll > "$out/WebView2Loader.dll"
+          printf '%s\r\n' "Apparition 0.1.1 with the tvOS device-type fix." "" \
+            "Open Apparition.exe for the guided install (keep WebView2Loader.dll next to it)." \
+            "When it asks what to install on the Apple TV, pick the patched Apparition-*-tvosfix-tvOS.ipa." \
+            "Command line: apparition-cli.exe" > "$out/README.txt"
+          mkdir -p out && (cd "$out" && zip -qX "$GITHUB_WORKSPACE/Apparition/out/Apparition-Installer-0.1.1-tvosfix-windows-x86_64.zip" *)
+          ls -l out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: apparition-windows-installer
+          path: Apparition/out/*.zip
+          if-no-files-found: error
